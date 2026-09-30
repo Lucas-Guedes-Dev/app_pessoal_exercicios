@@ -16,7 +16,7 @@ type Ciclo = {
 
 // ---------- Datas no fuso do usuário (mesma regra do app: a semana vira na segunda) ----------
 
-function hojeSaoPaulo(): string {
+export function hojeSaoPaulo(): string {
   // en-CA formata como YYYY-MM-DD
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date());
 }

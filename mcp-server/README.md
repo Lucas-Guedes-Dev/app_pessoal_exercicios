@@ -1,8 +1,9 @@
 # Servidor MCP — App de Exercícios
 
-Servidor MCP remoto que deixa o Claude (claude.ai, inclusive pelo celular) cadastrar, listar,
-editar e remover exercícios do app. Os dados ficam no Supabase, e o app sincroniza sozinho
-ao abrir, ao voltar para a tela e no "puxar para atualizar".
+Servidor MCP remoto que deixa o Claude (claude.ai, inclusive pelo celular) cuidar do app:
+exercícios, ciclo de semanas e alimentação (base TACO, alimentos próprios e diário). Os dados
+ficam no Supabase, e o app sincroniza sozinho ao abrir, ao voltar para a tela e no "puxar para
+atualizar".
 
 ```
 Claude (claude.ai) ──HTTPS──▶ este servidor (Render) ──service_role──▶ Supabase ◀──anon── App
@@ -17,9 +18,30 @@ Claude (claude.ai) ──HTTPS──▶ este servidor (Render) ──service_rol
 | `editar_exercicio(id, campos)` | Altera nome, quantidade, descrição, dias ou semanas |
 | `remover_exercicio(id)` | Soft delete (`deletado = true`). O app apaga o exercício localmente na próxima sincronização |
 
+| `ver_ciclo()` | Quantas semanas tem o ciclo e qual é a semana de hoje |
+| `configurar_ciclo(semanas?, semana_atual?)` | Muda a quantidade de semanas e/ou a semana atual |
+
 Dias usam os códigos do app: `Seg, Ter, Qua, Qui, Sex, Sab, Dom` ("terça" e "Quinta-feira"
 também são aceitos). `semanas` são as letras do ciclo (A–F). Quando não é informado, o
 exercício vale para todas as semanas.
+
+### Alimentação
+
+| Ferramenta | O que faz |
+|---|---|
+| `buscar_alimentos(texto, limite?)` | Busca sem acento, por todas as palavras, na mesma ordem do app. Devolve id, nutrientes por 100 g e medidas caseiras |
+| `detalhar_alimento(id)` | Um alimento com todas as medidas |
+| `cadastrar_alimento(nome, gramas_base, kcal, proteina, carbo, gordura, fibra?, porcao_rotulo?, confirmar?)` | Alimento próprio. Valores "por porção" são convertidos para 100 g, e a porção do rótulo vira medida caseira. Avisa se já existe nome parecido |
+| `editar_alimento(id, campos)` / `remover_alimento(id)` | Só alimentos próprios (`custom`). A TACO nunca é alterada |
+| `adicionar_porcao(alimento_id, rotulo, gramas)` | Medida caseira nova (ex.: "pote" = 170 g) em qualquer alimento |
+| `registrar_alimentacao(data?, refeicao, itens[{alimento_id, gramas? \| porcao + quantidade?}])` | Registra vários itens de uma vez. Data padrão: hoje (Brasília) |
+| `listar_diario(data? \| de, ate)` | Registros por refeição, com totais por refeição e por dia |
+| `editar_registro(id, campos)` / `remover_registro(id)` | Muda data, refeição ou quantidade (recalcula nutrientes) / soft delete |
+| `copiar_refeicao(de_data, para_data?, refeicao)` | Repete uma refeição de outro dia |
+| `resumo_alimentacao(de, ate)` | Média diária, calorias por refeição e alimentos mais usados |
+
+Refeições: `cafe`, `almoco`, `lanche`, `jantar`, `ceia`. IDs de alimentos são os mesmos do app:
+TACO/complementos < 100000, criados no app 100000–999999, criados pelo Claude ≥ 1000000.
 
 ---
 
@@ -31,6 +53,14 @@ exercício vale para todas as semanas.
    [`../supabase/schema.sql`](../supabase/schema.sql) e clique em **Run**.
 3. Numa nova query, cole [`../supabase/seed.sql`](../supabase/seed.sql) e clique em **Run**.
    Em **Table Editor → exercicios** devem aparecer os 5 exercícios de terça e quinta.
+   Depois rode, também um de cada vez e nesta ordem:
+   - [`../supabase/ciclo.sql`](../supabase/ciclo.sql): ciclo de semanas;
+   - [`../supabase/alimentacao.sql`](../supabase/alimentacao.sql): tabelas de alimentação;
+   - [`../supabase/alimentos_seed.sql`](../supabase/alimentos_seed.sql): base TACO (596 alimentos,
+     1.157 medidas). O arquivo tem ~115 KB; cole tudo de uma vez. Ele é gerado por
+     `node tools/taco/build-supabase-seed.mjs` a partir de `src/data/foods.json`.
+
+   Todos podem ser rodados de novo sem duplicar nada.
 4. Em **Project Settings → API Keys**, anote:
    - **Project URL** (ex.: `https://abcd1234.supabase.co`, também em *Project Settings → Data API*);
    - a chave **anon / publishable**, que vai no app;
@@ -93,6 +123,9 @@ e cole a URL.
    - "Cadastra prancha 3x40s na segunda e na quarta"
    - "Quais exercícios eu tenho na quinta?"
    - "Troca a quantidade do glute bridge para 45s"
+   - "No almoço comi 2 conchas de feijão e 150 g de arroz"
+   - "Cadastra esse whey: porção de 30 g tem 120 kcal, 24 g de proteína, 3 g de carbo e 1,5 g de gordura"
+   - "Quanto eu comi de proteína essa semana?"
 
 > A URL contém o segredo: quem tiver a URL consegue mexer no seu plano. Se ela vazar, troque
 > o `MCP_SECRET` no Render e atualize a URL do conector.
@@ -109,9 +142,15 @@ e cole a URL.
 4. Exercícios que vieram do Supabase aparecem com "☁ Claude" em "Treinos". No app dá
    para mudar só o tipo de atividade e a duração deles. Exercícios criados no app têm o botão
    **Enviar para o Supabase** na tela de edição.
+5. Alimentação sincroniza nos dois sentidos: o diário, os alimentos próprios e as medidas
+   criadas por você. O que o Claude registra aparece no app; o que você registra no app
+   (mesmo offline) sobe quando houver internet. Na primeira sincronização, o histórico que já
+   existe no aparelho é enviado. Em conflito, vale a alteração mais recente. Favoritos ficam só no app.
 
 ## Segurança, em resumo
 
 - `/mcp/:secret`: o segredo é comparado com `MCP_SECRET` em tempo constante. Com segredo errado, a resposta é 404.
-- O servidor usa a service_role key. O app usa a anon key, que só pode **ler** e **inserir**
-  (políticas de RLS em `schema.sql`). Editar e remover só pelo servidor.
+- O servidor usa a service_role key. Nos exercícios, o app (anon key) só pode **ler** e
+  **inserir** (RLS em `schema.sql`). Na alimentação, o app lê tudo e grava só o que é da pessoa:
+  diário, alimentos próprios e medidas personalizadas (RLS em `alimentacao.sql`), sempre com
+  soft delete. A base TACO não pode ser alterada pelo app.

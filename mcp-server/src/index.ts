@@ -5,6 +5,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { createClient } from '@supabase/supabase-js';
 import { registrarFerramentas } from './tools.js';
 import { registrarFerramentasCiclo } from './ciclo.js';
+import { registrarFerramentasAlimentacao } from './alimentacao.js';
 
 function exigirEnv(nome: string): string {
   const valor = process.env[nome];
@@ -44,11 +45,16 @@ function criarServidor(): McpServer {
         'Gerencia o plano de treino do app de exercícios do usuário. Os dias da semana usam os ' +
         'códigos Seg, Ter, Qua, Qui, Sex, Sab, Dom. Antes de editar ou remover, use ' +
         'listar_exercicios para achar o id. As semanas do ciclo (A a F) são configuradas com ' +
-        'configurar_ciclo; use ver_ciclo para saber quantas semanas existem e qual é a de hoje.',
+        'configurar_ciclo; use ver_ciclo para saber quantas semanas existem e qual é a de hoje. ' +
+        'Alimentação: a base é a tabela TACO (valores por 100 g) mais alimentos próprios do usuário. ' +
+        'Para registrar o que ele comeu, SEMPRE use buscar_alimentos antes para achar o id e depois ' +
+        'registrar_alimentacao (gramas ou medida caseira como "concha"). Refeições: cafe, almoco, ' +
+        'lanche, jantar, ceia. Datas em AAAA-MM-DD, no horário de Brasília (padrão: hoje).',
     }
   );
   registrarFerramentas(server, supabase);
   registrarFerramentasCiclo(server, supabase);
+  registrarFerramentasAlimentacao(server, supabase);
   return server;
 }
 
