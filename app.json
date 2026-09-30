@@ -1,0 +1,28 @@
+{
+  "expo": {
+    "name": "Treino Futebol",
+    "slug": "app-exercicios",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "backgroundColor": "#0f7b3f"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.lucas.appexercicios"
+    },
+    "android": {
+      "package": "com.lucas.appexercicios",
+      "permissions": ["POST_NOTIFICATIONS"]
+    },
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "color": "#0f7b3f"
+        }
+      ]
+    ]
+  }
+}
