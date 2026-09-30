@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { Alert, FlatList, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { searchFoods, toggleFavorite } from '../db/food';
+import { onFoodSynced } from '../services/food-sync';
 import { colors } from '../theme';
 import { mealLabel } from '../utils/food';
 import { formatNumber } from '../utils/health';
@@ -32,6 +33,11 @@ export default function FoodSearchScreen({ navigation, route }) {
     const t = setTimeout(() => run(query).catch((e) => Alert.alert('Erro', String(e))), 150);
     return () => clearTimeout(t);
   }, [query, run]);
+
+  // alimentos criados pelo Claude chegando pela sincronização
+  const queryRef = useRef(query);
+  queryRef.current = query;
+  useEffect(() => onFoodSynced(() => run(queryRef.current).catch(() => {})), [run]);
 
   // voltar de "criar alimento" ou de um favorito alterado atualiza a lista
   useFocusEffect(

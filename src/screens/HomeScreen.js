@@ -26,6 +26,7 @@ import { getEntriesForDate } from '../db/food';
 import { isCheckInDismissed } from '../db/progress';
 import { scheduleDailyReminders } from '../notifications';
 import { onExercisesSynced, syncExercises } from '../services/sync';
+import { onFoodSynced } from '../services/food-sync';
 import { colors } from '../theme';
 import { formatDateBR, toDateKey, weekdayCode, weekdayName } from '../utils/dates';
 import { formatKcal, sumNutrients } from '../utils/food';
@@ -99,6 +100,7 @@ export default function HomeScreen({ navigation }) {
 
   // Sincronização em segundo plano (ex.: app voltou do background) trouxe mudanças
   useEffect(() => onExercisesSynced(() => load().catch(() => {})), [load]);
+  useEffect(() => onFoodSynced(() => load().catch(() => {})), [load]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);

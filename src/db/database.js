@@ -175,10 +175,83 @@ async function migrate(db) {
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_exercises_remote_id ON exercises (remote_id)'
   );
 
+  await migrateFoodSync(db);
+
   await db.runAsync(
     "INSERT OR IGNORE INTO settings (key, value) VALUES ('week_count', ?)",
     String(DEFAULT_WEEKS)
   );
+}
+
+/**
+ * uuid v4 gerado pelo próprio SQLite (um por linha, inclusive em INSERT ... SELECT).
+ * É o id do item no Supabase, criado no aparelho para que reenviar não duplique.
+ */
+export const UUID_SQL =
+  "(lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || " +
+  "substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (abs(random()) % 4), 1) || " +
+  "substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6))))";
+
+/**
+ * Colunas da sincronização da alimentação com o Supabase (src/services/food-sync.js):
+ *   remote_id   uuid no Supabase (registros e medidas; alimentos usam o próprio id)
+ *   updated_at  última alteração local (ms), para "a alteração mais recente vence"
+ *   dirty       1 = alterado no aparelho e ainda não enviado
+ * O que já existe no aparelho começa como pendente, para subir na primeira sincronização.
+ * Exclusões locais continuam apagando a linha; o id vai para sync_deletions até ser enviado.
+ */
+async function migrateFoodSync(db) {
+  const now = Date.now();
+  const colsOf = async (table) => (await db.getAllAsync(`PRAGMA table_info(${table})`)).map((c) => c.name);
+
+  const entryCols = await colsOf('food_entries');
+  if (!entryCols.includes('remote_id')) {
+    await db.execAsync(`
+      ALTER TABLE food_entries ADD COLUMN remote_id TEXT;
+      ALTER TABLE food_entries ADD COLUMN updated_at INTEGER;
+      ALTER TABLE food_entries ADD COLUMN dirty INTEGER NOT NULL DEFAULT 0;
+    `);
+  }
+  await db.runAsync(
+    `UPDATE food_entries SET remote_id = ${UUID_SQL}, updated_at = ?, dirty = 1 WHERE remote_id IS NULL`,
+    now
+  );
+  await db.execAsync(
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_food_entries_remote_id ON food_entries (remote_id)'
+  );
+
+  const foodCols = await colsOf('foods');
+  if (!foodCols.includes('dirty')) {
+    await db.execAsync(`
+      ALTER TABLE foods ADD COLUMN updated_at INTEGER;
+      ALTER TABLE foods ADD COLUMN dirty INTEGER NOT NULL DEFAULT 0;
+    `);
+    await db.runAsync("UPDATE foods SET updated_at = ?, dirty = 1 WHERE source = 'custom'", now);
+  }
+
+  const portionCols = await colsOf('food_portions');
+  if (!portionCols.includes('remote_id')) {
+    await db.execAsync(`
+      ALTER TABLE food_portions ADD COLUMN remote_id TEXT;
+      ALTER TABLE food_portions ADD COLUMN updated_at INTEGER;
+      ALTER TABLE food_portions ADD COLUMN dirty INTEGER NOT NULL DEFAULT 0;
+    `);
+  }
+  // só as medidas criadas pela pessoa sincronizam; as da base vêm do foods.json
+  await db.runAsync(
+    `UPDATE food_portions SET remote_id = ${UUID_SQL}, updated_at = ?, dirty = 1
+      WHERE custom = 1 AND remote_id IS NULL`,
+    now
+  );
+  await db.execAsync(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_food_portions_remote_id ON food_portions (remote_id);
+
+    CREATE TABLE IF NOT EXISTS sync_deletions (
+      tabela TEXT NOT NULL,
+      remote_id TEXT NOT NULL,
+      PRIMARY KEY (tabela, remote_id)
+    );
+  `);
 }
 
 async function seedIfEmpty(db) {

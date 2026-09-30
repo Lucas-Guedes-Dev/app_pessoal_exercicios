@@ -13,6 +13,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { getMeasurements, getProfile } from '../db/database';
 import { getDailyEnergy } from '../db/energy';
 import { copyMeal, deleteEntry, getEntriesForDate } from '../db/food';
+import { onFoodSynced, syncFood } from '../services/food-sync';
 import { colors } from '../theme';
 import { addDays, formatDateBR, parseDateKey, toDateKey, weekdayCode, weekdayName } from '../utils/dates';
 import { MEALS, describeAmount, formatKcal, sumNutrients } from '../utils/food';
@@ -70,9 +71,13 @@ export default function FoodDiaryScreen({ navigation, route }) {
     }, [load])
   );
 
+  // O Claude (ou outra sincronização) trouxe mudanças no diário
+  useEffect(() => onFoodSynced(() => load().catch(() => {})), [load]);
+
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
+      await syncFood();
       await load();
     } finally {
       setRefreshing(false);

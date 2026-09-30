@@ -1,8 +1,18 @@
-import { getDb } from './database';
+import { UUID_SQL, getDb } from './database';
 import { nutrientsFor } from '../utils/food';
 import { normalize } from '../utils/text';
+import { requestFoodSync } from '../services/food-sync';
 
+// Alimentos próprios criados no app: 100000–999999. Os criados pelo Claude (Supabase)
+// começam em 1000000, então os dois lados nunca geram o mesmo id.
 const CUSTOM_ID_START = 100000;
+const CUSTOM_ID_END = 999999;
+
+// Exclusão local: apaga a linha e guarda o id para virar "deletado" no Supabase
+async function queueDeletion(db, tabela, remoteId) {
+  if (remoteId == null) return;
+  await db.runAsync('INSERT OR IGNORE INTO sync_deletions (tabela, remote_id) VALUES (?, ?)', tabela, String(remoteId));
+}
 const FOOD_COLUMNS = 'id, name, category, kcal, protein, carbs, fat, fiber, source, favorite';
 
 // ---------- busca ----------
@@ -71,16 +81,23 @@ export async function toggleFavorite(id) {
 export async function addPortion(foodId, label, grams) {
   const db = await getDb();
   await db.runAsync(
-    'INSERT INTO food_portions (food_id, label, grams, custom) VALUES (?, ?, ?, 1)',
+    `INSERT INTO food_portions (food_id, label, grams, custom, remote_id, updated_at, dirty)
+     VALUES (?, ?, ?, 1, ${UUID_SQL}, ?, 1)`,
     foodId,
     label,
-    grams
+    grams,
+    Date.now()
   );
+  requestFoodSync();
 }
 
 export async function deletePortion(id) {
   const db = await getDb();
+  const row = await db.getFirstAsync('SELECT remote_id FROM food_portions WHERE id = ? AND custom = 1', id);
+  if (!row) return;
+  await queueDeletion(db, 'alimento_porcoes', row.remote_id);
   await db.runAsync('DELETE FROM food_portions WHERE id = ? AND custom = 1', id);
+  requestFoodSync();
 }
 
 // ---------- alimentos personalizados ----------
@@ -94,25 +111,34 @@ export async function saveCustomFood({ id, name, baseGrams, portionLabel, kcal, 
   const f = 100 / baseGrams;
   const values = [kcal * f, protein * f, carbs * f, fat * f, fiber * f];
 
+  const now = Date.now();
   let foodId = id;
   if (foodId) {
     await db.runAsync(
-      'UPDATE foods SET name = ?, search = ?, kcal = ?, protein = ?, carbs = ?, fat = ?, fiber = ? WHERE id = ?',
+      `UPDATE foods SET name = ?, search = ?, kcal = ?, protein = ?, carbs = ?, fat = ?, fiber = ?,
+              updated_at = ?, dirty = 1
+        WHERE id = ?`,
       name,
       normalize(name),
       ...values,
+      now,
       foodId
     );
   } else {
-    const row = await db.getFirstAsync('SELECT MAX(id) AS maxId FROM foods WHERE id >= ?', CUSTOM_ID_START);
+    const row = await db.getFirstAsync(
+      'SELECT MAX(id) AS maxId FROM foods WHERE id BETWEEN ? AND ?',
+      CUSTOM_ID_START,
+      CUSTOM_ID_END
+    );
     foodId = Math.max(row?.maxId ?? 0, CUSTOM_ID_START - 1) + 1;
     await db.runAsync(
-      `INSERT INTO foods (id, name, search, category, kcal, protein, carbs, fat, fiber, source)
-       VALUES (?, ?, ?, 'Meus alimentos', ?, ?, ?, ?, ?, 'custom')`,
+      `INSERT INTO foods (id, name, search, category, kcal, protein, carbs, fat, fiber, source, updated_at, dirty)
+       VALUES (?, ?, ?, 'Meus alimentos', ?, ?, ?, ?, ?, 'custom', ?, 1)`,
       foodId,
       name,
       normalize(name),
-      ...values
+      ...values,
+      now
     );
   }
 
@@ -123,15 +149,26 @@ export async function saveCustomFood({ id, name, baseGrams, portionLabel, kcal, 
       foodId,
       portionLabel
     );
-    if (exists) await db.runAsync('UPDATE food_portions SET grams = ? WHERE id = ?', baseGrams, exists.id);
-    else await addPortion(foodId, portionLabel, baseGrams);
+    if (exists) {
+      await db.runAsync(
+        'UPDATE food_portions SET grams = ?, updated_at = ?, dirty = 1 WHERE id = ?',
+        baseGrams,
+        now,
+        exists.id
+      );
+    } else await addPortion(foodId, portionLabel, baseGrams);
   }
+  requestFoodSync();
   return foodId;
 }
 
 export async function deleteCustomFood(id) {
   const db = await getDb();
+  const row = await db.getFirstAsync("SELECT id FROM foods WHERE id = ? AND source = 'custom'", id);
+  if (!row) return;
+  await queueDeletion(db, 'alimentos', row.id);
   await db.runAsync("DELETE FROM foods WHERE id = ? AND source = 'custom'", id);
+  requestFoodSync();
 }
 
 // ---------- registros do dia ----------
@@ -150,10 +187,11 @@ export async function getEntry(id) {
 export async function saveEntry({ entryId, date, meal, food, grams, portionLabel, portionQty }) {
   const db = await getDb();
   const n = nutrientsFor(food, grams);
+  const now = Date.now();
   if (entryId) {
     await db.runAsync(
       `UPDATE food_entries SET date = ?, meal = ?, grams = ?, portion_label = ?, portion_qty = ?,
-              kcal = ?, protein = ?, carbs = ?, fat = ? WHERE id = ?`,
+              kcal = ?, protein = ?, carbs = ?, fat = ?, updated_at = ?, dirty = 1 WHERE id = ?`,
       date,
       meal,
       grams,
@@ -163,13 +201,16 @@ export async function saveEntry({ entryId, date, meal, food, grams, portionLabel
       n.protein,
       n.carbs,
       n.fat,
+      now,
       entryId
     );
+    requestFoodSync();
     return;
   }
   await db.runAsync(
-    `INSERT INTO food_entries (date, meal, food_id, name, grams, portion_label, portion_qty, kcal, protein, carbs, fat)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO food_entries (date, meal, food_id, name, grams, portion_label, portion_qty, kcal, protein, carbs, fat,
+                               remote_id, updated_at, dirty)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${UUID_SQL}, ?, 1)`,
     date,
     meal,
     food.id,
@@ -180,26 +221,36 @@ export async function saveEntry({ entryId, date, meal, food, grams, portionLabel
     n.kcal,
     n.protein,
     n.carbs,
-    n.fat
+    n.fat,
+    now
   );
+  requestFoodSync();
 }
 
 export async function deleteEntry(id) {
   const db = await getDb();
+  const row = await db.getFirstAsync('SELECT remote_id FROM food_entries WHERE id = ?', id);
+  if (!row) return;
+  await queueDeletion(db, 'registros_alimentacao', row.remote_id);
   await db.runAsync('DELETE FROM food_entries WHERE id = ?', id);
+  requestFoodSync();
 }
 
 /** Copia as refeições de um dia para outro (ex.: repetir o café de ontem). */
 export async function copyMeal(fromDate, toDate, meal) {
   const db = await getDb();
   await db.runAsync(
-    `INSERT INTO food_entries (date, meal, food_id, name, grams, portion_label, portion_qty, kcal, protein, carbs, fat)
-     SELECT ?, meal, food_id, name, grams, portion_label, portion_qty, kcal, protein, carbs, fat
+    `INSERT INTO food_entries (date, meal, food_id, name, grams, portion_label, portion_qty, kcal, protein, carbs, fat,
+                               remote_id, updated_at, dirty)
+     SELECT ?, meal, food_id, name, grams, portion_label, portion_qty, kcal, protein, carbs, fat,
+            ${UUID_SQL}, ?, 1
        FROM food_entries WHERE date = ? AND meal = ? ORDER BY id`,
     toDate,
+    Date.now(),
     fromDate,
     meal
   );
+  requestFoodSync();
 }
 
 /** Totais por dia no intervalo (só dias com algum registro). */

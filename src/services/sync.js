@@ -11,38 +11,10 @@ import {
 import { parseDateKey, startOfWeek, toDateKey } from '../utils/dates';
 import { WEEK_LETTERS, shiftLetter } from '../utils/weeks';
 import { rescheduleRemindersIfAllowed } from '../notifications';
+import { isSyncConfigured, request } from './supabase';
+import { syncFood } from './food-sync';
 
-// Chaves do .env (EXPO_PUBLIC_ vão embutidas no app na hora do build)
-const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL?.replace(/\/+$/, '');
-const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
-const TIMEOUT_MS = 10000;
-
-export function isSyncConfigured() {
-  return !!(SUPABASE_URL && SUPABASE_ANON_KEY);
-}
-
-// PostgREST do Supabase. Só o header apikey: funciona com a chave anon (JWT) e com a publishable.
-async function request(path, { method = 'GET', body, prefer } = {}) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  try {
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
-      method,
-      headers: {
-        apikey: SUPABASE_ANON_KEY,
-        Accept: 'application/json',
-        ...(body ? { 'Content-Type': 'application/json' } : {}),
-        ...(prefer ? { Prefer: prefer } : {}),
-      },
-      body: body ? JSON.stringify(body) : undefined,
-      signal: controller.signal,
-    });
-    if (!res.ok) throw new Error(`Supabase respondeu ${res.status}: ${await res.text()}`);
-    return res.json();
-  } finally {
-    clearTimeout(timer);
-  }
-}
+export { isSyncConfigured };
 
 // ---------- Conversão entre o Supabase e o SQLite ----------
 
@@ -95,6 +67,16 @@ export function syncExercises() {
 
 async function doSync() {
   if (!isSyncConfigured()) return { ok: false, reason: 'not-configured' };
+  // Alimentação em paralelo, com os próprios avisos (onFoodSynced); nunca lança erro
+  const food = syncFood();
+  try {
+    return await syncExercisesAndCycle();
+  } finally {
+    await food;
+  }
+}
+
+async function syncExercisesAndCycle() {
   try {
     const rows = await request(
       'exercicios?select=id,nome,quantidade,descricao,dia_semana,semanas,deletado&order=criado_em'
