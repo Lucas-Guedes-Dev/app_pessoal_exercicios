@@ -55,3 +55,5 @@ create policy "anon pode inserir exercicios"
   on public.exercicios for insert
   to anon
   with check (deletado = false);
+
+-- Ciclo de semanas: veja supabase/ciclo.sql (rode também aquele arquivo).

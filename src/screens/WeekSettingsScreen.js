@@ -9,6 +9,7 @@ import {
   setWeekCount,
 } from '../db/database';
 import { scheduleDailyReminders } from '../notifications';
+import { pushCycle } from '../services/sync';
 import { colors } from '../theme';
 import { MAX_WEEKS, MIN_WEEKS, hasWeek, lettersFor } from '../utils/weeks';
 
@@ -35,6 +36,7 @@ export default function WeekSettingsScreen() {
       await action();
       await load();
       scheduleDailyReminders().catch(() => {});
+      pushCycle().catch((e) => console.log('Ciclo não enviado ao Supabase:', String(e)));
     } catch (e) {
       Alert.alert('Erro', String(e));
     } finally {

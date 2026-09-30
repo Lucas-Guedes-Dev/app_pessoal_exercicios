@@ -1,4 +1,15 @@
-import { applyRemoteExercises, getExercise, linkExerciseToRemote } from '../db/database';
+import {
+  applyRemoteExercises,
+  getCurrentWeek,
+  getExercise,
+  getSetting,
+  linkExerciseToRemote,
+  setCurrentWeekLetter,
+  setSetting,
+  setWeekCount,
+} from '../db/database';
+import { parseDateKey, startOfWeek, toDateKey } from '../utils/dates';
+import { WEEK_LETTERS, shiftLetter } from '../utils/weeks';
 import { rescheduleRemindersIfAllowed } from '../notifications';
 
 // Chaves do .env (EXPO_PUBLIC_ vão embutidas no app na hora do build)
@@ -88,7 +99,11 @@ async function doSync() {
     const rows = await request(
       'exercicios?select=id,nome,quantidade,descricao,dia_semana,semanas,deletado&order=criado_em'
     );
-    const changed = await applyRemoteExercises(rows.map(toLocal));
+    let changed = await applyRemoteExercises(rows.map(toLocal));
+    changed += await syncCycle().catch((e) => {
+      console.log('Ciclo não sincronizado:', String(e));
+      return 0;
+    });
     await rescheduleRemindersIfAllowed().catch((e) => console.warn('Falha ao reagendar lembretes:', e));
     if (changed > 0) listeners.forEach((fn) => fn());
     return { ok: true, changed };
@@ -128,4 +143,61 @@ export async function pushExercise(id) {
   await linkExerciseToRemote(id, created.id, toLocal(created).details);
   listeners.forEach((fn) => fn());
   return created.id;
+}
+
+// ---------- Ciclo de semanas ----------
+// Tabela "ciclo" no Supabase (uma linha, id = 1). O Claude muda pelo MCP; a tela "Semanas"
+// do app também grava lá (pushCycle). Guardamos o atualizado_em da última versão aplicada/enviada
+// para não reaplicar a mesma configuração a cada sincronização.
+
+const CYCLE_SYNC_KEY = 'ciclo_sync_at';
+
+function weeksBetween(fromKey, toKey) {
+  const ms = parseDateKey(toKey).getTime() - parseDateKey(fromKey).getTime();
+  return Math.round(ms / (7 * 24 * 60 * 60 * 1000));
+}
+
+/** Aplica no SQLite a configuração de ciclo do Supabase. Retorna 1 se mudou algo. */
+async function syncCycle() {
+  const [remote] = await request('ciclo?select=semanas,semana_atual,semana_inicio,atualizado_em&id=eq.1');
+  if (!remote) return 0;
+  if ((await getSetting(CYCLE_SYNC_KEY)) === remote.atualizado_em) return 0;
+
+  let changed = 0;
+  const before = await getCurrentWeek();
+  if (remote.semanas !== before.count) {
+    await setWeekCount(remote.semanas);
+    changed = 1;
+  }
+
+  if (remote.semana_atual && remote.semana_inicio) {
+    const currentStart = toDateKey(startOfWeek());
+    const steps = weeksBetween(remote.semana_inicio, currentStart);
+    if (steps >= 0 && WEEK_LETTERS.indexOf(remote.semana_atual) < remote.semanas) {
+      const letter = shiftLetter(remote.semana_atual, steps, remote.semanas);
+      const now = await getCurrentWeek();
+      if (letter !== now.letter) {
+        await setCurrentWeekLetter(letter);
+        changed = 1;
+      }
+    }
+  }
+
+  await setSetting(CYCLE_SYNC_KEY, remote.atualizado_em);
+  return changed;
+}
+
+/**
+ * Envia para o Supabase o ciclo configurado no app (quantidade de semanas e semana atual),
+ * para o Claude enxergar a mesma configuração. Falhas não atrapalham o app.
+ */
+export async function pushCycle() {
+  if (!isSyncConfigured()) return;
+  const week = await getCurrentWeek();
+  const [saved] = await request('ciclo?on_conflict=id&select=atualizado_em', {
+    method: 'POST',
+    prefer: 'resolution=merge-duplicates,return=representation',
+    body: { id: 1, semanas: week.count, semana_atual: week.letter, semana_inicio: week.weekStart },
+  });
+  if (saved?.atualizado_em) await setSetting(CYCLE_SYNC_KEY, saved.atualizado_em);
 }

@@ -4,6 +4,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createClient } from '@supabase/supabase-js';
 import { registrarFerramentas } from './tools.js';
+import { registrarFerramentasCiclo } from './ciclo.js';
 
 function exigirEnv(nome: string): string {
   const valor = process.env[nome];
@@ -42,10 +43,12 @@ function criarServidor(): McpServer {
       instructions:
         'Gerencia o plano de treino do app de exercícios do usuário. Os dias da semana usam os ' +
         'códigos Seg, Ter, Qua, Qui, Sex, Sab, Dom. Antes de editar ou remover, use ' +
-        'listar_exercicios para achar o id.',
+        'listar_exercicios para achar o id. As semanas do ciclo (A a F) são configuradas com ' +
+        'configurar_ciclo; use ver_ciclo para saber quantas semanas existem e qual é a de hoje.',
     }
   );
   registrarFerramentas(server, supabase);
+  registrarFerramentasCiclo(server, supabase);
   return server;
 }
 
