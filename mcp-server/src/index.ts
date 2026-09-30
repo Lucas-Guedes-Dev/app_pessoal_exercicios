@@ -2,11 +2,15 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import express, { type Request, type Response } from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from '@modelcontextprotocol/sdk/server/auth/router.js';
+import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
 import { createClient } from '@supabase/supabase-js';
 import { registrarFerramentas } from './tools.js';
 import { registrarFerramentasCiclo } from './ciclo.js';
 import { registrarFerramentasAlimentacao } from './alimentacao.js';
 import { criarEscopo } from './escopo.js';
+import { ProvedorOAuth } from './auth/provider.js';
+import { rotaEntrar } from './auth/login.js';
 
 function exigirEnv(nome: string): string {
   const valor = process.env[nome];
@@ -19,7 +23,15 @@ function exigirEnv(nome: string): string {
 
 const SUPABASE_URL = exigirEnv('SUPABASE_URL');
 const SUPABASE_SERVICE_ROLE_KEY = exigirEnv('SUPABASE_SERVICE_ROLE_KEY');
+// chave publishable/anon: só para conferir e-mail e senha na tela de login do OAuth
+const SUPABASE_ANON_KEY = exigirEnv('SUPABASE_ANON_KEY');
+// endereço público do servidor, ex.: https://app-exercicios.onrender.com (a URL do conector é PUBLIC_URL/mcp)
+const PUBLIC_URL = exigirEnv('PUBLIC_URL').replace(/\/+$/, '');
 const PORT = Number(process.env.PORT) || 3000;
+const segundos = (nome: string, padrao: number) => Number(process.env[nome]) || padrao;
+const VALIDADE_ACESSO = segundos('OAUTH_ACCESS_TTL', 60 * 60); // 1 hora
+const VALIDADE_REFRESH = segundos('OAUTH_REFRESH_TTL', 90 * 24 * 60 * 60); // 90 dias
+const VALIDADE_CODIGO = 5 * 60;
 
 // Rota antiga /mcp/<segredo>, só para migrar o conector: age como o usuário de LEGACY_USER_EMAIL
 const LEGACY_SECRET_ROUTE = process.env.LEGACY_SECRET_ROUTE === 'on';
@@ -79,8 +91,42 @@ function criarServidor(userId: string): McpServer {
   return server;
 }
 
+const recursoMcp = new URL('/mcp', PUBLIC_URL);
+const provider = new ProvedorOAuth({
+  supabase,
+  recurso: recursoMcp,
+  validadeAcesso: VALIDADE_ACESSO,
+  validadeRefresh: VALIDADE_REFRESH,
+  validadeCodigo: VALIDADE_CODIGO,
+});
+const ESCOPOS = ['app', 'offline_access'];
+const metadataRecursoUrl = getOAuthProtectedResourceMetadataUrl(recursoMcp);
+
 const app = express();
+app.set('trust proxy', 1); // Render fica atrás de um proxy (IP real para o limite de tentativas)
 app.use(express.json({ limit: '1mb' }));
+
+// OAuth 2.1: /.well-known/oauth-authorization-server, /.well-known/oauth-protected-resource/mcp,
+// /register (DCR), /authorize (tela de login), /token (code + PKCE, refresh) e /revoke
+app.use(
+  mcpAuthRouter({
+    provider,
+    issuerUrl: new URL(PUBLIC_URL),
+    resourceServerUrl: recursoMcp,
+    scopesSupported: ESCOPOS,
+    resourceName: 'App de Exercícios',
+  })
+);
+// Mesma metadata também na raiz, para clientes que procuram só em /.well-known/oauth-protected-resource
+app.get('/.well-known/oauth-protected-resource', (_req, res) => {
+  res.json({
+    resource: recursoMcp.href,
+    authorization_servers: [new URL(PUBLIC_URL).href],
+    scopes_supported: ESCOPOS,
+    resource_name: 'App de Exercícios',
+  });
+});
+app.use(rotaEntrar({ provider, supabaseUrl: SUPABASE_URL, supabaseAnonKey: SUPABASE_ANON_KEY }));
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true });
@@ -122,6 +168,18 @@ function metodoNaoPermitido(res: Response) {
   });
 }
 
+// Endpoint MCP: exige Bearer válido; sem ele, 401 com WWW-Authenticate apontando para a metadata
+const exigirLogin = requireBearerAuth({ verifier: provider, resourceMetadataUrl: metadataRecursoUrl });
+app.post('/mcp', exigirLogin, async (req: Request, res: Response) => {
+  const userId = req.auth?.extra?.userId;
+  if (typeof userId !== 'string') {
+    res.status(401).json({ error: 'invalid_token' });
+    return;
+  }
+  await atenderMcp(req, res, userId);
+});
+app.all('/mcp', exigirLogin, (_req: Request, res: Response) => metodoNaoPermitido(res));
+
 if (LEGACY_SECRET_ROUTE) {
   app.post('/mcp/:secret', async (req: Request, res: Response) => {
     if (!secretValido(req.params.secret)) {
@@ -148,5 +206,6 @@ if (LEGACY_SECRET_ROUTE) {
 }
 
 app.listen(PORT, () => {
-  console.log(`Servidor MCP ouvindo na porta ${PORT}`);
+  console.log(`Servidor MCP ouvindo na porta ${PORT} — conector: ${recursoMcp.href}`);
+  if (LEGACY_SECRET_ROUTE) console.log(`Rota antiga /mcp/<segredo> ligada, como ${LEGACY_USER_EMAIL}`);
 });
