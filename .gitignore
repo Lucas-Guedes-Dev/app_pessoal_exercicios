@@ -4,3 +4,7 @@ dist/
 web-build/
 *.log
 .DS_Store
+
+# Segredos locais
+.env
+.env.local
