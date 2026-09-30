@@ -22,6 +22,7 @@ import {
 } from '../db/database';
 import FormField from '../components/FormField';
 import { scheduleDailyReminders } from '../notifications';
+import { pushExercise } from '../services/sync';
 import { colors } from '../theme';
 import { WEEKDAYS_DISPLAY } from '../utils/dates';
 import { WEEK_LETTERS, lettersFor } from '../utils/weeks';
@@ -49,6 +50,7 @@ export default function ExerciseFormScreen({ navigation, route }) {
   const [durationError, setDurationError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [remoteId, setRemoteId] = useState(null); // veio do Supabase: gerenciado pelo Claude
 
   useLayoutEffect(() => {
     navigation.setOptions({ title: isEdit ? 'Editar Exercício' : 'Novo Exercício' });
@@ -68,6 +70,7 @@ export default function ExerciseFormScreen({ navigation, route }) {
           return;
         }
         setName(ex.name);
+        setRemoteId(ex.remote_id ?? null);
         setDetails(ex.details ?? '');
         setDays(ex.days.split(','));
         setWeeks(ex.weeks.split(','));
@@ -106,40 +109,75 @@ export default function ExerciseFormScreen({ navigation, route }) {
   const kcalHint =
     weight && activity && durationNum > 0 ? activityKcal(activityOf(activity).met, weight, durationNum) : null;
 
-  const save = async () => {
+  // Valida e grava no SQLite. Retorna false se algum campo impediu de salvar.
+  const persist = async () => {
     if (!name.trim()) {
       Alert.alert('Campo obrigatório', 'Informe o nome do exercício.');
-      return;
+      return false;
     }
     if (weeks.length === 0) {
       Alert.alert('Campo obrigatório', 'Selecione pelo menos uma semana.');
-      return;
+      return false;
     }
     if (days.length === 0) {
       Alert.alert('Campo obrigatório', 'Selecione pelo menos um dia da semana.');
-      return;
+      return false;
     }
     const dur = checkNumber(duration, { label: 'a duração', min: 1, max: 240, integer: true });
     setDurationError(dur.error ?? null);
-    if (dur.error) return;
+    if (dur.error) return false;
 
+    // salva na ordem natural, ex: dias "Seg,Qua" e semanas "A,C"
+    const data = {
+      name: name.trim(),
+      details: details.trim(),
+      days: WEEKDAYS_DISPLAY.filter((d) => days.includes(d)).join(','),
+      weeks: WEEK_LETTERS.filter((w) => weeks.includes(w)).join(','),
+      activity: activity ?? 'forca',
+      durationMin: dur.value,
+    };
+    if (isEdit) await updateExercise(exerciseId, data);
+    else await addExercise(data);
+    scheduleDailyReminders().catch(() => {}); // atualiza o texto dos lembretes
+    return true;
+  };
+
+  const save = async () => {
     setSaving(true);
     try {
-      // salva na ordem natural, ex: dias "Seg,Qua" e semanas "A,C"
-      const data = {
-        name: name.trim(),
-        details: details.trim(),
-        days: WEEKDAYS_DISPLAY.filter((d) => days.includes(d)).join(','),
-        weeks: WEEK_LETTERS.filter((w) => weeks.includes(w)).join(','),
-        activity: activity ?? 'forca',
-        durationMin: dur.value,
-      };
-      if (isEdit) await updateExercise(exerciseId, data);
-      else await addExercise(data);
-      scheduleDailyReminders().catch(() => {}); // atualiza o texto dos lembretes
+      if (!(await persist())) {
+        setSaving(false);
+        return;
+      }
       navigation.goBack();
     } catch (e) {
       Alert.alert('Erro ao salvar', String(e));
+      setSaving(false);
+    }
+  };
+
+  const confirmPush = () => {
+    Alert.alert(
+      'Enviar para o Supabase',
+      'O exercício passa a ser gerenciado pelo Claude: nome, detalhes, dias e semanas só poderão ser ' +
+        'mudados pelo chat. O histórico de feito/não feito continua no aparelho.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Enviar', onPress: push },
+      ]
+    );
+  };
+
+  const push = async () => {
+    setSaving(true);
+    try {
+      if (!(await persist())) return;
+      await pushExercise(exerciseId);
+      Alert.alert('Enviado', 'O exercício agora está no Supabase.');
+      navigation.goBack();
+    } catch (e) {
+      Alert.alert('Erro ao enviar', String(e?.message ?? e));
+    } finally {
       setSaving(false);
     }
   };
@@ -181,9 +219,19 @@ export default function ExerciseFormScreen({ navigation, route }) {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <ScrollView style={styles.container} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        {remoteId && (
+          <View style={styles.notice}>
+            <Text style={styles.noticeText}>
+              ☁ Gerenciado pelo Claude. Para mudar nome, detalhes, dias ou semanas (ou remover), peça no
+              chat. Aqui dá para ajustar só o tipo de atividade e a duração.
+            </Text>
+          </View>
+        )}
+
         <Text style={styles.label}>Nome</Text>
         <TextInput
-          style={styles.input}
+          style={[styles.input, remoteId && styles.inputLocked]}
+          editable={!remoteId}
           value={name}
           onChangeText={setName}
           placeholder="Ex: Agachamento livre"
@@ -193,7 +241,8 @@ export default function ExerciseFormScreen({ navigation, route }) {
 
         <Text style={styles.label}>Detalhes</Text>
         <TextInput
-          style={[styles.input, styles.multiline]}
+          style={[styles.input, styles.multiline, remoteId && styles.inputLocked]}
+          editable={!remoteId}
           value={details}
           onChangeText={setDetails}
           placeholder="Ex: 3x15-20"
@@ -237,9 +286,9 @@ export default function ExerciseFormScreen({ navigation, route }) {
         <Text style={styles.label}>Semanas do ciclo</Text>
         <View style={styles.chips}>
           {letters.map((l) => (
-            <Chip key={l} label={`Semana ${l}`} selected={weeks.includes(l)} onPress={() => toggleWeek(l)} />
+            <Chip key={l} label={`Semana ${l}`} selected={weeks.includes(l)} onPress={remoteId ? undefined : () => toggleWeek(l)} />
           ))}
-          {letters.length > 1 && (
+          {letters.length > 1 && !remoteId && (
             <Chip
               label="Todas"
               selected={allWeeks}
@@ -251,7 +300,7 @@ export default function ExerciseFormScreen({ navigation, route }) {
         <Text style={styles.label}>Dias da semana</Text>
         <View style={styles.chips}>
           {WEEKDAYS_DISPLAY.map((code) => (
-            <Chip key={code} label={code} selected={days.includes(code)} onPress={() => toggleDay(code)} />
+            <Chip key={code} label={code} selected={days.includes(code)} onPress={remoteId ? undefined : () => toggleDay(code)} />
           ))}
         </View>
 
@@ -265,7 +314,17 @@ export default function ExerciseFormScreen({ navigation, route }) {
           </Text>
         </Pressable>
 
-        {isEdit && (
+        {isEdit && !remoteId && (
+          <Pressable
+            onPress={confirmPush}
+            disabled={saving}
+            style={({ pressed }) => [styles.secondaryButton, (pressed || saving) && { opacity: 0.7 }]}
+          >
+            <Text style={styles.secondaryButtonText}>☁ Enviar para o Supabase</Text>
+          </Pressable>
+        )}
+
+        {isEdit && !remoteId && (
           <Pressable
             onPress={confirmDelete}
             disabled={saving}
@@ -295,6 +354,18 @@ const styles = StyleSheet.create({
     color: colors.text,
   },
   multiline: { minHeight: 80 },
+  inputLocked: { color: colors.muted },
+  notice: { backgroundColor: colors.primaryLight, borderRadius: 10, padding: 12, marginTop: 4 },
+  noticeText: { fontSize: 13, color: colors.text, lineHeight: 18 },
+  secondaryButton: {
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: colors.primary,
+  },
+  secondaryButtonText: { color: colors.primary, fontSize: 16, fontWeight: '600' },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   help: { fontSize: 12, color: colors.muted, marginTop: 6, lineHeight: 17 },
   button: {

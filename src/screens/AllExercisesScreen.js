@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -14,6 +14,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import Chip from '../components/Chip';
 import { deleteExercise, getAllExercises, getCurrentWeek } from '../db/database';
 import { scheduleDailyReminders } from '../notifications';
+import { onExercisesSynced, syncExercises } from '../services/sync';
 import { colors } from '../theme';
 import { WEEKDAYS_DISPLAY, weekdayCode, weekdayName } from '../utils/dates';
 import { hasDay, hasWeek, lettersFor } from '../utils/weeks';
@@ -64,9 +65,12 @@ export default function AllExercisesScreen({ navigation }) {
     }, [load])
   );
 
+  useEffect(() => onExercisesSynced(() => load().catch(() => {})), [load]);
+
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
+      await syncExercises();
       await load();
     } finally {
       setRefreshing(false);
@@ -74,6 +78,10 @@ export default function AllExercisesScreen({ navigation }) {
   }, [load]);
 
   const confirmDelete = (item) => {
+    if (item.remote_id) {
+      Alert.alert(item.name, 'Gerenciado pelo Claude: para remover, peça no chat.');
+      return;
+    }
     const where = [];
     if (item.weeks.includes(',')) where.push(`semanas ${item.weeks.replace(/,/g, ', ')}`);
     if (item.days.includes(',')) where.push(`dias ${item.days.replace(/,/g, ', ')}`);
@@ -169,7 +177,10 @@ export default function AllExercisesScreen({ navigation }) {
           onLongPress={() => confirmDelete(item)}
           style={({ pressed }) => [styles.card, pressed && { opacity: 0.8 }]}
         >
-          <Text style={styles.name}>{item.name}</Text>
+          <Text style={styles.name}>
+            {item.name}
+            {item.remote_id ? <Text style={styles.remoteTag}>  ☁ Claude</Text> : null}
+          </Text>
           {!!item.details && <Text style={styles.details}>{item.details}</Text>}
           {(item.days.includes(',') || item.weeks.includes(',')) && (
             <Text style={styles.repeat}>
@@ -196,6 +207,7 @@ const styles = StyleSheet.create({
   content: { padding: 16, paddingBottom: 32 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.background },
   headerButtonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+  remoteTag: { fontSize: 12, fontWeight: '500', color: colors.muted },
   filters: { gap: 8, paddingBottom: 4 },
   summary: { fontSize: 13, color: colors.muted, marginTop: 10, marginBottom: 4 },
   sectionHeader: { flexDirection: 'row', alignItems: 'center', marginTop: 18, marginBottom: 8 },

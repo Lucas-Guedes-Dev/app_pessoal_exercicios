@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -25,6 +25,7 @@ import { getDailyEnergy } from '../db/energy';
 import { getEntriesForDate } from '../db/food';
 import { isCheckInDismissed } from '../db/progress';
 import { scheduleDailyReminders } from '../notifications';
+import { onExercisesSynced, syncExercises } from '../services/sync';
 import { colors } from '../theme';
 import { formatDateBR, toDateKey, weekdayCode, weekdayName } from '../utils/dates';
 import { formatKcal, sumNutrients } from '../utils/food';
@@ -96,9 +97,13 @@ export default function HomeScreen({ navigation }) {
     }, [load, navigation])
   );
 
+  // Sincronização em segundo plano (ex.: app voltou do background) trouxe mudanças
+  useEffect(() => onExercisesSynced(() => load().catch(() => {})), [load]);
+
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
+      await syncExercises();
       await load();
     } finally {
       setRefreshing(false);
@@ -118,6 +123,15 @@ export default function HomeScreen({ navigation }) {
   };
 
   const openActions = (item) => {
+    if (item.remote_id) {
+      Alert.alert(item.name, `${item.details ? `${item.details}
+
+` : ''}Gerenciado pelo Claude: para mudar ou remover, peça no chat.`, [
+        { text: 'Fechar', style: 'cancel' },
+        { text: 'Tipo e duração', onPress: () => navigation.navigate('EditExercise', { exerciseId: item.id }) },
+      ]);
+      return;
+    }
     Alert.alert(item.name, item.details || undefined, [
       { text: 'Cancelar', style: 'cancel' },
       { text: 'Excluir', style: 'destructive', onPress: () => confirmDelete(item) },

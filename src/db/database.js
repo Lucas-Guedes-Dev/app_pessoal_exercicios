@@ -166,6 +166,14 @@ async function migrate(db) {
     await db.execAsync('ALTER TABLE exercises ADD COLUMN activity TEXT');
     await db.execAsync('ALTER TABLE exercises ADD COLUMN duration_min INTEGER');
   }
+  // id (uuid) do exercício no Supabase. NULL = exercício só local, criado no app.
+  // O id local continua INTEGER para não mexer em completions nem no histórico.
+  if (!columns.some((c) => c.name === 'remote_id')) {
+    await db.execAsync('ALTER TABLE exercises ADD COLUMN remote_id TEXT');
+  }
+  await db.execAsync(
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_exercises_remote_id ON exercises (remote_id)'
+  );
 
   await db.runAsync(
     "INSERT OR IGNORE INTO settings (key, value) VALUES ('week_count', ?)",
@@ -315,7 +323,7 @@ export async function setWeekCount(count) {
 export async function getExercisesForDay(dayCode, weekLetter, dateKey) {
   const db = await getDb();
   return db.getAllAsync(
-    `SELECT e.id, e.name, e.details, e.days, e.weeks, COALESCE(c.done, 0) AS done
+    `SELECT e.id, e.name, e.details, e.days, e.weeks, e.remote_id, COALESCE(c.done, 0) AS done
        FROM exercises e
        LEFT JOIN completions c ON c.exercise_id = e.id AND c.date = ?
       WHERE (',' || e.days || ',') LIKE ?
@@ -330,7 +338,7 @@ export async function getExercisesForDay(dayCode, weekLetter, dateKey) {
 export async function getAllExercises() {
   const db = await getDb();
   return db.getAllAsync(
-    'SELECT id, name, details, days, weeks, activity, duration_min, created_at FROM exercises ORDER BY id'
+    'SELECT id, name, details, days, weeks, activity, duration_min, remote_id, created_at FROM exercises ORDER BY id'
   );
 }
 
@@ -351,7 +359,7 @@ export async function addExercise({ name, details, days, weeks, activity, durati
 export async function getExercise(id) {
   const db = await getDb();
   return db.getFirstAsync(
-    'SELECT id, name, details, days, weeks, activity, duration_min, created_at FROM exercises WHERE id = ?',
+    'SELECT id, name, details, days, weeks, activity, duration_min, remote_id, created_at FROM exercises WHERE id = ?',
     id
   );
 }
@@ -373,6 +381,69 @@ export async function updateExercise(id, { name, details, days, weeks, activity,
 export async function deleteExercise(id) {
   const db = await getDb();
   await db.runAsync('DELETE FROM exercises WHERE id = ?', id);
+}
+
+// ---------- Sincronização com o Supabase ----------
+
+/**
+ * Aplica os exercícios vindos do Supabase: cria ou atualiza pelo remote_id e apaga
+ * os marcados como deletado. Exercícios só locais (remote_id NULL) não são tocados.
+ * "activity" e "duration_min" são só locais: ganham uma sugestão na criação e
+ * depois não são sobrescritos.
+ * Retorna quantos exercícios mudaram.
+ */
+export async function applyRemoteExercises(rows) {
+  const db = await getDb();
+  let changed = 0;
+  await db.withTransactionAsync(async () => {
+    for (const r of rows) {
+      if (r.deleted) {
+        const res = await db.runAsync('DELETE FROM exercises WHERE remote_id = ?', r.remoteId);
+        changed += res.changes;
+        continue;
+      }
+      const existing = await db.getFirstAsync(
+        'SELECT id, name, details, days, weeks FROM exercises WHERE remote_id = ?',
+        r.remoteId
+      );
+      if (!existing) {
+        const { activity, duration } = guessActivity(r.name, r.details);
+        await db.runAsync(
+          'INSERT INTO exercises (name, details, days, weeks, activity, duration_min, remote_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          r.name,
+          r.details,
+          r.days,
+          r.weeks,
+          activity,
+          duration,
+          r.remoteId
+        );
+        changed += 1;
+      } else if (
+        existing.name !== r.name ||
+        existing.details !== r.details ||
+        existing.days !== r.days ||
+        existing.weeks !== r.weeks
+      ) {
+        await db.runAsync(
+          'UPDATE exercises SET name = ?, details = ?, days = ?, weeks = ? WHERE id = ?',
+          r.name,
+          r.details,
+          r.days,
+          r.weeks,
+          existing.id
+        );
+        changed += 1;
+      }
+    }
+  });
+  return changed;
+}
+
+// Liga um exercício local ao registro criado no Supabase ("Enviar para o Supabase")
+export async function linkExerciseToRemote(id, remoteId, details) {
+  const db = await getDb();
+  await db.runAsync('UPDATE exercises SET remote_id = ?, details = ? WHERE id = ?', remoteId, details, id);
 }
 
 // ---------- Conclusões ----------

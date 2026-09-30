@@ -59,7 +59,23 @@ function buildBody(names, letter) {
  * (18:00 por padrão) — como o horário da partida varia, o lembrete é sempre no fim do dia.
  * É refeito toda vez que o app abre e quando exercícios, semanas ou jogos mudam.
  */
-export async function scheduleDailyReminders() {
+// Execuções simultâneas (abertura do app + sincronização) duplicariam os lembretes,
+// então cada chamada espera a anterior terminar.
+let scheduleLock = Promise.resolve();
+
+export function scheduleDailyReminders() {
+  const run = scheduleLock.then(scheduleAll);
+  scheduleLock = run.catch(() => {});
+  return run;
+}
+
+// Reagenda só se a pessoa já permitiu notificações (não abre o diálogo de permissão)
+export async function rescheduleRemindersIfAllowed() {
+  const { status } = await Notifications.getPermissionsAsync();
+  if (status === 'granted') await scheduleDailyReminders();
+}
+
+async function scheduleAll() {
   await Notifications.cancelAllScheduledNotificationsAsync();
 
   const [exercises, current, games] = await Promise.all([

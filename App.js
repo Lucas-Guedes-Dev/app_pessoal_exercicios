@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, AppState, StyleSheet, Text, View } from 'react-native';
 import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
 import * as Notifications from 'expo-notifications';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { StatusBar } from 'expo-status-bar';
 import { getDb, getProfile } from './src/db/database';
 import { requestNotificationPermission, scheduleDailyReminders } from './src/notifications';
+import { syncExercises } from './src/services/sync';
 import HomeScreen from './src/screens/HomeScreen';
 import ExerciseFormScreen from './src/screens/ExerciseFormScreen';
 import AllExercisesScreen from './src/screens/AllExercisesScreen';
@@ -57,8 +58,22 @@ export default function App() {
       } catch (e) {
         console.warn('Falha ao configurar notificações:', e);
       }
+
+      // Busca os exercícios do Supabase (sem internet, segue com o SQLite)
+      await syncExercises();
     })();
   }, []);
+
+  // Volta do segundo plano: sincroniza de novo
+  useEffect(() => {
+    if (!ready) return;
+    let previous = AppState.currentState;
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active' && previous !== 'active') syncExercises();
+      previous = next;
+    });
+    return () => sub.remove();
+  }, [ready]);
 
   // Toque na notificação: com o app aberto ou vindo do segundo plano
   useEffect(() => {
