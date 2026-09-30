@@ -3,8 +3,9 @@ import { nutrientsFor } from '../utils/food';
 import { normalize } from '../utils/text';
 import { requestFoodSync } from '../services/food-sync';
 
-// Alimentos próprios criados no app: 100000–999999. Os criados pelo Claude (Supabase)
-// começam em 1000000, então os dois lados nunca geram o mesmo id.
+// Alimentos próprios criados no app: id local 100000–999999. No Supabase eles ganham o id do
+// servidor (>= 1000000) no envio, guardado em foods.remote_id; os que chegam do Supabase usam
+// o id do servidor também como id local.
 const CUSTOM_ID_START = 100000;
 const CUSTOM_ID_END = 999999;
 
@@ -132,8 +133,9 @@ export async function saveCustomFood({ id, name, baseGrams, portionLabel, kcal, 
     );
     foodId = Math.max(row?.maxId ?? 0, CUSTOM_ID_START - 1) + 1;
     await db.runAsync(
-      `INSERT INTO foods (id, name, search, category, kcal, protein, carbs, fat, fiber, source, updated_at, dirty)
-       VALUES (?, ?, ?, 'Meus alimentos', ?, ?, ?, ?, ?, 'custom', ?, 1)`,
+      `INSERT INTO foods (id, name, search, category, kcal, protein, carbs, fat, fiber, source, updated_at, dirty,
+                          chave_cliente)
+       VALUES (?, ?, ?, 'Meus alimentos', ?, ?, ?, ?, ?, 'custom', ?, 1, ${UUID_SQL})`,
       foodId,
       name,
       normalize(name),
@@ -164,9 +166,9 @@ export async function saveCustomFood({ id, name, baseGrams, portionLabel, kcal, 
 
 export async function deleteCustomFood(id) {
   const db = await getDb();
-  const row = await db.getFirstAsync("SELECT id FROM foods WHERE id = ? AND source = 'custom'", id);
+  const row = await db.getFirstAsync("SELECT id, remote_id FROM foods WHERE id = ? AND source = 'custom'", id);
   if (!row) return;
-  await queueDeletion(db, 'alimentos', row.id);
+  await queueDeletion(db, 'alimentos', row.remote_id); // nunca enviado: nada a apagar lá
   await db.runAsync("DELETE FROM foods WHERE id = ? AND source = 'custom'", id);
   requestFoodSync();
 }

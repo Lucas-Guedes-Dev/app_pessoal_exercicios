@@ -262,6 +262,20 @@ async function migrateFoodSync(db) {
     `);
     await db.runAsync("UPDATE foods SET updated_at = ?, dirty = 1 WHERE source = 'custom'", now);
   }
+  // Multiusuário: alimento próprio criado no app ganha o id do servidor no envio (remote_id);
+  // chave_cliente (uuid) faz o reenvio não duplicar. Os que já existiam mantêm o próprio id.
+  if (!foodCols.includes('remote_id')) {
+    await db.execAsync(`
+      ALTER TABLE foods ADD COLUMN remote_id INTEGER;
+      ALTER TABLE foods ADD COLUMN chave_cliente TEXT;
+    `);
+    await db.runAsync("UPDATE foods SET remote_id = id WHERE source = 'custom'");
+  }
+  await db.runAsync(`UPDATE foods SET chave_cliente = ${UUID_SQL} WHERE source = 'custom' AND chave_cliente IS NULL`);
+  await db.execAsync(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_foods_remote_id ON foods (remote_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_foods_chave_cliente ON foods (chave_cliente);
+  `);
 
   const portionCols = await colsOf('food_portions');
   if (!portionCols.includes('remote_id')) {

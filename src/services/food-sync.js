@@ -6,7 +6,7 @@ import { isSyncConfigured, request as supabaseRequest } from './supabase';
  * Sincronização da alimentação com o Supabase, nos dois sentidos.
  *
  *   SQLite (app)                         Supabase
- *   foods (source 'custom')      ⇄       alimentos (fonte 'custom') — mesmo id numérico
+ *   foods (source 'custom')      ⇄       alimentos (fonte 'custom') — foods.remote_id (id do servidor)
  *   food_portions (custom = 1)   ⇄       alimento_porcoes (personalizada) — remote_id (uuid)
  *   food_entries                 ⇄       registros_alimentacao — remote_id (uuid)
  *
@@ -105,7 +105,7 @@ async function runOnce() {
 
 // ---------- utilitários ----------
 
-const FOOD_COLS = 'id,nome,categoria,kcal,proteina,carbo,gordura,fibra,deletado,atualizado_em';
+const FOOD_COLS = 'id,chave_cliente,nome,categoria,kcal,proteina,carbo,gordura,fibra,deletado,atualizado_em';
 const PORTION_COLS = 'id,alimento_id,rotulo,gramas,deletado,atualizado_em';
 const ENTRY_COLS =
   'id,data,refeicao,alimento_id,nome,gramas,porcao_rotulo,porcao_qtd,kcal,proteina,carbo,gordura,deletado,criado_em,atualizado_em';
@@ -123,6 +123,19 @@ function isoToLocal(iso) {
   const d = new Date(iso);
   const p = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+const BASE_MAX_ID = 100000; // abaixo disso: base TACO, mesmo id no app e no Supabase
+
+/** id local do alimento que no Supabase tem o id `remoteId` (null se não existe no aparelho) */
+async function localFoodId(db, remoteId) {
+  if (remoteId == null) return null;
+  const id = Number(remoteId);
+  const row =
+    id < BASE_MAX_ID
+      ? await db.getFirstAsync('SELECT id FROM foods WHERE id = ?', id)
+      : await db.getFirstAsync('SELECT id FROM foods WHERE remote_id = ?', id);
+  return row?.id ?? null;
 }
 
 async function isQueuedForDeletion(db, tabela, remoteId) {
@@ -164,18 +177,24 @@ async function pull(db, table, cols, filter, apply) {
 }
 
 async function applyFood(db, r) {
-  const id = Number(r.id);
-  if (await isQueuedForDeletion(db, TABLES.foods, id)) return 0;
+  const remoteId = Number(r.id);
+  if (await isQueuedForDeletion(db, TABLES.foods, remoteId)) return 0;
+  // pelo id do servidor ou, se o envio anterior perdeu a resposta, pela chave criada no aparelho
   const local = await db.getFirstAsync(
-    "SELECT id, name, kcal, protein, carbs, fat, fiber, dirty, updated_at FROM foods WHERE id = ? AND source = 'custom'",
-    id
+    `SELECT id, remote_id, name, kcal, protein, carbs, fat, fiber, dirty, updated_at FROM foods
+      WHERE source = 'custom' AND (remote_id = ? OR (remote_id IS NULL AND chave_cliente = ?))`,
+    remoteId,
+    r.chave_cliente ?? ''
   );
+  if (local && local.remote_id == null) {
+    await db.runAsync('UPDATE foods SET remote_id = ? WHERE id = ?', remoteId, local.id);
+  }
   if (localWins(local, r.atualizado_em)) return 0;
   const updatedAt = Date.parse(r.atualizado_em);
 
   if (r.deletado) {
     if (!local) return 0;
-    await db.runAsync("DELETE FROM foods WHERE id = ? AND source = 'custom'", id);
+    await db.runAsync("DELETE FROM foods WHERE id = ? AND source = 'custom'", local.id);
     return 1;
   }
   const next = {
@@ -187,10 +206,16 @@ async function applyFood(db, r) {
     fiber: num(r.fibra),
   };
   if (!local) {
+    // o id do servidor vira o id local; se já estiver ocupado aqui, usa o próximo livre do app
+    const taken = await db.getFirstAsync('SELECT id FROM foods WHERE id = ?', remoteId);
+    const localId = taken
+      ? ((await db.getFirstAsync('SELECT MAX(id) AS m FROM foods WHERE id BETWEEN 100000 AND 999999'))?.m ?? 99999) + 1
+      : remoteId;
     await db.runAsync(
-      `INSERT INTO foods (id, name, search, category, kcal, protein, carbs, fat, fiber, source, updated_at, dirty)
-       VALUES (?, ?, ?, 'Meus alimentos', ?, ?, ?, ?, ?, 'custom', ?, 0)`,
-      id,
+      `INSERT INTO foods (id, name, search, category, kcal, protein, carbs, fat, fiber, source, updated_at, dirty,
+                          remote_id, chave_cliente)
+       VALUES (?, ?, ?, 'Meus alimentos', ?, ?, ?, ?, ?, 'custom', ?, 0, ?, ?)`,
+      localId,
       next.name,
       normalize(next.name),
       next.kcal,
@@ -198,12 +223,14 @@ async function applyFood(db, r) {
       next.carbs,
       next.fat,
       next.fiber,
-      updatedAt
+      updatedAt,
+      remoteId,
+      r.chave_cliente ?? null
     );
     return 1;
   }
   if (!differs(local, next, Object.keys(next))) {
-    if (local.dirty) await db.runAsync('UPDATE foods SET dirty = 0 WHERE id = ?', id);
+    if (local.dirty) await db.runAsync('UPDATE foods SET dirty = 0 WHERE id = ?', local.id);
     return 0;
   }
   await db.runAsync(
@@ -218,7 +245,7 @@ async function applyFood(db, r) {
     next.fat,
     next.fiber,
     updatedAt,
-    id
+    local.id
   );
   return 1;
 }
@@ -239,12 +266,12 @@ async function applyPortion(db, r) {
   }
   const next = { label: r.rotulo, grams: num(r.gramas) };
   if (!local) {
-    const food = await db.getFirstAsync('SELECT id FROM foods WHERE id = ?', Number(r.alimento_id));
-    if (!food) return 0; // alimento removido ou ainda não baixado
+    const foodId = await localFoodId(db, r.alimento_id);
+    if (!foodId) return 0; // alimento removido ou ainda não baixado
     await db.runAsync(
       `INSERT INTO food_portions (food_id, label, grams, custom, remote_id, updated_at, dirty)
        VALUES (?, ?, ?, 1, ?, ?, 0)`,
-      food.id,
+      foodId,
       next.label,
       next.grams,
       r.id,
@@ -283,10 +310,7 @@ async function applyEntry(db, r) {
     return 1;
   }
   // o alimento pode ter sido removido: o registro fica, sem o vínculo (como no app)
-  const foodId =
-    r.alimento_id != null && (await db.getFirstAsync('SELECT id FROM foods WHERE id = ?', Number(r.alimento_id)))
-      ? Number(r.alimento_id)
-      : null;
+  const foodId = await localFoodId(db, r.alimento_id);
   const next = {
     date: r.data,
     meal: r.refeicao,
@@ -371,35 +395,70 @@ async function pushDirty(db, { select, table, toRemote, clear }) {
   }
 }
 
-function pushFoods(db) {
-  return pushDirty(db, {
+const foodToRemote = (f) => ({
+  chave_cliente: f.chave_cliente,
+  nome: f.name,
+  busca: normalize(f.name),
+  categoria: f.category ?? 'Meus alimentos',
+  kcal: f.kcal,
+  proteina: f.protein,
+  carbo: f.carbs,
+  gordura: f.fat,
+  fibra: f.fiber ?? 0,
+  fonte: 'custom',
+  comum: false,
+  deletado: false,
+});
+
+async function pushFoods(db) {
+  // já existem no servidor: upsert pelo id de lá
+  await pushDirty(db, {
     table: TABLES.foods,
-    select: "SELECT * FROM foods WHERE dirty = 1 AND source = 'custom' ORDER BY id",
-    toRemote: (f) => ({
-      id: f.id,
-      nome: f.name,
-      busca: normalize(f.name),
-      categoria: f.category ?? 'Meus alimentos',
-      kcal: f.kcal,
-      proteina: f.protein,
-      carbo: f.carbs,
-      gordura: f.fat,
-      fibra: f.fiber ?? 0,
-      fonte: 'custom',
-      comum: false,
-      deletado: false,
-    }),
+    select: "SELECT * FROM foods WHERE dirty = 1 AND source = 'custom' AND remote_id IS NOT NULL ORDER BY id",
+    toRemote: (f) => ({ id: f.remote_id, ...foodToRemote(f) }),
     clear: 'UPDATE foods SET dirty = 0 WHERE id = ? AND updated_at IS ?',
   });
+
+  // novos: o servidor gera o id; a chave criada no aparelho evita duplicar se reenviar
+  for (;;) {
+    const rows = await db.getAllAsync(
+      `SELECT * FROM foods WHERE dirty = 1 AND source = 'custom' AND remote_id IS NULL ORDER BY id LIMIT ${PUSH_BATCH}`
+    );
+    if (rows.length === 0) return;
+    const saved = await request(`${TABLES.foods}?on_conflict=chave_cliente&select=id,chave_cliente`, {
+      method: 'POST',
+      body: rows.map(foodToRemote),
+      prefer: 'resolution=merge-duplicates,return=representation',
+    });
+    const idByKey = new Map(saved.map((r) => [r.chave_cliente, Number(r.id)]));
+    for (const f of rows) {
+      const remoteId = idByKey.get(f.chave_cliente);
+      if (remoteId == null) continue;
+      await db.runAsync(
+        'UPDATE foods SET remote_id = ?, dirty = CASE WHEN updated_at IS ? THEN 0 ELSE dirty END WHERE id = ?',
+        remoteId,
+        f.updated_at,
+        f.id
+      );
+    }
+    if (idByKey.size === 0) return;
+  }
 }
+
+// alimento_id no Supabase: base = mesmo id; próprio = remote_id (NULL se ainda não subiu)
+const REMOTE_FOOD_ID = `CASE WHEN x.food_id IS NULL THEN NULL WHEN x.food_id < ${BASE_MAX_ID} THEN x.food_id ELSE f.remote_id END`;
+const FOOD_READY = `(x.food_id IS NULL OR x.food_id < ${BASE_MAX_ID} OR f.remote_id IS NOT NULL)`;
 
 function pushPortions(db) {
   return pushDirty(db, {
     table: TABLES.portions,
-    select: 'SELECT * FROM food_portions WHERE dirty = 1 AND custom = 1 ORDER BY id',
+    select: `SELECT x.*, ${REMOTE_FOOD_ID} AS alimento_remoto
+               FROM food_portions x LEFT JOIN foods f ON f.id = x.food_id
+              WHERE x.dirty = 1 AND x.custom = 1 AND ${FOOD_READY}
+              ORDER BY x.id`,
     toRemote: (p) => ({
       id: p.remote_id,
-      alimento_id: p.food_id,
+      alimento_id: p.alimento_remoto,
       rotulo: p.label,
       gramas: p.grams,
       personalizada: true,
@@ -412,12 +471,15 @@ function pushPortions(db) {
 function pushEntries(db) {
   return pushDirty(db, {
     table: TABLES.entries,
-    select: 'SELECT * FROM food_entries WHERE dirty = 1 ORDER BY id',
+    select: `SELECT x.*, ${REMOTE_FOOD_ID} AS alimento_remoto
+               FROM food_entries x LEFT JOIN foods f ON f.id = x.food_id
+              WHERE x.dirty = 1 AND ${FOOD_READY}
+              ORDER BY x.id`,
     toRemote: (e) => ({
       id: e.remote_id,
       data: e.date,
       refeicao: e.meal,
-      alimento_id: e.food_id,
+      alimento_id: e.alimento_remoto,
       nome: e.name,
       gramas: e.grams,
       porcao_rotulo: e.portion_label,
