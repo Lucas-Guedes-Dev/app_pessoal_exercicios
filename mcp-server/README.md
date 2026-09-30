@@ -105,8 +105,8 @@ e cole a URL.
 2. Gere o app de novo (ex.: `npx expo run:android --variant release`, ou o comando que você usa
    para gerar o APK). As variáveis `EXPO_PUBLIC_` são embutidas no build, então um APK antigo não as enxerga.
 3. O app sincroniza ao abrir, ao voltar para a tela e no "puxar para atualizar" da tela inicial
-   e de "Todos os Exercícios". Sem internet, ele usa o que já está salvo.
-4. Exercícios que vieram do Supabase aparecem com "☁ Claude" em "Todos os Exercícios". No app dá
+   e de "Treinos". Sem internet, ele usa o que já está salvo.
+4. Exercícios que vieram do Supabase aparecem com "☁ Claude" em "Treinos". No app dá
    para mudar só o tipo de atividade e a duração deles. Exercícios criados no app têm o botão
    **Enviar para o Supabase** na tela de edição.
 

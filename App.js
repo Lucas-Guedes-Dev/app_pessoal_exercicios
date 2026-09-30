@@ -141,7 +141,7 @@ export default function App() {
         <Stack.Screen
           name="AllExercises"
           component={AllExercisesScreen}
-          options={{ title: 'Todos os Exercícios' }}
+          options={{ title: 'Treinos' }}
         />
         <Stack.Screen name="History" component={HistoryScreen} options={{ title: 'Histórico' }} />
         <Stack.Screen

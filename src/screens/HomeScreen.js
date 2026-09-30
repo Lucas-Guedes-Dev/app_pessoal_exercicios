@@ -240,7 +240,7 @@ export default function HomeScreen({ navigation }) {
               onPress={() => navigation.navigate('Games')}
             />
             <NavButton label="📅 Histórico" onPress={() => navigation.navigate('History')} />
-            <NavButton label="📋 Todos" onPress={() => navigation.navigate('AllExercises')} />
+            <NavButton label="📋 Treinos" onPress={() => navigation.navigate('AllExercises')} />
             <NavButton label="⚙️ Semanas" onPress={() => navigation.navigate('WeekSettings')} />
           </View>
         </View>
