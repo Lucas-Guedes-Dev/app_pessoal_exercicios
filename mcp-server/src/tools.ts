@@ -1,5 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { Escopo } from './escopo.js';
 import { z } from 'zod';
 import {
   DIAS,
@@ -56,7 +56,7 @@ function mensagemDe(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-export function registrarFerramentas(server: McpServer, supabase: SupabaseClient) {
+export function registrarFerramentas(server: McpServer, db: Escopo) {
   server.registerTool(
     'cadastrar_exercicios',
     {
@@ -100,7 +100,7 @@ export function registrarFerramentas(server: McpServer, supabase: SupabaseClient
           semanas: semanasTexto,
         }));
 
-        const { data, error } = await supabase.from(TABELA).insert(linhas).select(COLUNAS);
+        const { data, error } = await db.inserir(TABELA, linhas).select(COLUNAS);
         if (error) return erro(`Erro ao cadastrar no Supabase: ${error.message}`);
         return ok(`${data.length} exercício(s) cadastrado(s) em ${diaSemana}.`, data);
       } catch (e) {
@@ -130,9 +130,8 @@ export function registrarFerramentas(server: McpServer, supabase: SupabaseClient
         const codigo = dia ? normalizarDia(dia) : null;
         if (dia && !codigo) return erro(`Dia inválido: ${dia}. Use: ${DIAS.join(', ')}.`);
 
-        const { data, error } = await supabase
-          .from(TABELA)
-          .select(COLUNAS)
+        const { data, error } = await db
+          .ler(TABELA, COLUNAS)
           .eq('deletado', false)
           .order('criado_em');
         if (error) return erro(`Erro ao listar no Supabase: ${error.message}`);
@@ -183,9 +182,8 @@ export function registrarFerramentas(server: McpServer, supabase: SupabaseClient
         if (campos.semanas !== undefined) alteracoes.semanas = semanasParaTexto(campos.semanas);
         if (Object.keys(alteracoes).length === 0) return erro('Nenhum campo para alterar foi informado.');
 
-        const { data, error } = await supabase
-          .from(TABELA)
-          .update(alteracoes)
+        const { data, error } = await db
+          .atualizar(TABELA, alteracoes)
           .eq('id', id)
           .eq('deletado', false)
           .select(COLUNAS);
@@ -213,9 +211,8 @@ export function registrarFerramentas(server: McpServer, supabase: SupabaseClient
     async ({ id }) => {
       try {
         // Soft delete: o app precisa ver o registro marcado para removê-lo localmente
-        const { data, error } = await supabase
-          .from(TABELA)
-          .update({ deletado: true })
+        const { data, error } = await db
+          .atualizar(TABELA, { deletado: true })
           .eq('id', id)
           .eq('deletado', false)
           .select(COLUNAS);

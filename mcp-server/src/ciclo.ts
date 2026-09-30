@@ -1,5 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { Escopo } from './escopo.js';
 import { z } from 'zod';
 import { SEMANAS } from './dias.js';
 
@@ -67,13 +67,13 @@ function erro(texto: string) {
   return { content: [{ type: 'text' as const, text: texto }], isError: true };
 }
 
-async function lerCiclo(supabase: SupabaseClient): Promise<Ciclo | null> {
-  const { data, error } = await supabase.from(TABELA).select(COLUNAS).eq('id', 1).maybeSingle();
+async function lerCiclo(db: Escopo): Promise<Ciclo | null> {
+  const { data, error } = await db.ler(TABELA, COLUNAS).maybeSingle();
   if (error) throw new Error(`Erro ao ler o ciclo no Supabase: ${error.message}`);
   return (data as Ciclo | null) ?? null;
 }
 
-export function registrarFerramentasCiclo(server: McpServer, supabase: SupabaseClient) {
+export function registrarFerramentasCiclo(server: McpServer, db: Escopo) {
   server.registerTool(
     'ver_ciclo',
     {
@@ -86,7 +86,7 @@ export function registrarFerramentasCiclo(server: McpServer, supabase: SupabaseC
     },
     async () => {
       try {
-        const c = await lerCiclo(supabase);
+        const c = await lerCiclo(db);
         if (!c) {
           return erro(
             'O ciclo ainda não foi configurado por aqui. O app está usando a configuração local ' +
@@ -130,7 +130,7 @@ export function registrarFerramentasCiclo(server: McpServer, supabase: SupabaseC
           return erro('Informe semanas e/ou semana_atual.');
         }
 
-        const atual = await lerCiclo(supabase);
+        const atual = await lerCiclo(db);
         const total = semanas ?? atual?.semanas;
         if (!total) return erro('O ciclo ainda não existe: informe também "semanas".');
 
@@ -151,15 +151,13 @@ export function registrarFerramentasCiclo(server: McpServer, supabase: SupabaseC
         }
 
         const linha = {
-          id: 1,
           semanas: total,
           semana_atual: letra,
           semana_inicio: letra ? segunda : null,
         };
 
-        const { data, error } = await supabase
-          .from(TABELA)
-          .upsert(linha, { onConflict: 'id' })
+        const { data, error } = await db
+          .salvarCiclo(linha)
           .select(COLUNAS)
           .single();
         if (error) return erro(`Erro ao salvar o ciclo no Supabase: ${error.message}`);

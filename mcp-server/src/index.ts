@@ -6,6 +6,7 @@ import { createClient } from '@supabase/supabase-js';
 import { registrarFerramentas } from './tools.js';
 import { registrarFerramentasCiclo } from './ciclo.js';
 import { registrarFerramentasAlimentacao } from './alimentacao.js';
+import { criarEscopo } from './escopo.js';
 
 function exigirEnv(nome: string): string {
   const valor = process.env[nome];
@@ -18,10 +19,14 @@ function exigirEnv(nome: string): string {
 
 const SUPABASE_URL = exigirEnv('SUPABASE_URL');
 const SUPABASE_SERVICE_ROLE_KEY = exigirEnv('SUPABASE_SERVICE_ROLE_KEY');
-const MCP_SECRET = exigirEnv('MCP_SECRET');
 const PORT = Number(process.env.PORT) || 3000;
 
-if (MCP_SECRET.length < 24) {
+// Rota antiga /mcp/<segredo>, só para migrar o conector: age como o usuário de LEGACY_USER_EMAIL
+const LEGACY_SECRET_ROUTE = process.env.LEGACY_SECRET_ROUTE === 'on';
+const MCP_SECRET = LEGACY_SECRET_ROUTE ? exigirEnv('MCP_SECRET') : '';
+const LEGACY_USER_EMAIL = LEGACY_SECRET_ROUTE ? exigirEnv('LEGACY_USER_EMAIL').trim().toLowerCase() : '';
+
+if (LEGACY_SECRET_ROUTE && MCP_SECRET.length < 24) {
   console.error('MCP_SECRET precisa ter pelo menos 24 caracteres.');
   process.exit(1);
 }
@@ -37,7 +42,22 @@ function secretValido(recebido: unknown): boolean {
   return timingSafeEqual(createHash('sha256').update(recebido).digest(), hashSecret);
 }
 
-function criarServidor(): McpServer {
+/** id do usuário dono da rota antiga (buscado pelo e-mail no Supabase Auth, uma vez) */
+let usuarioLegado: string | null = null;
+async function idUsuarioLegado(): Promise<string> {
+  if (usuarioLegado) return usuarioLegado;
+  for (let page = 1; page <= 20; page++) {
+    const { data, error } = await supabase.auth.admin.listUsers({ page, perPage: 200 });
+    if (error) throw new Error(`Erro ao buscar o usuário da rota antiga: ${error.message}`);
+    const u = data.users.find((x) => x.email?.toLowerCase() === LEGACY_USER_EMAIL);
+    if (u) return (usuarioLegado = u.id);
+    if (data.users.length < 200) break;
+  }
+  throw new Error(`Nenhuma conta com o e-mail ${LEGACY_USER_EMAIL} (LEGACY_USER_EMAIL).`);
+}
+
+/** Servidor MCP preso a um usuário: todas as ferramentas usam o escopo dele */
+function criarServidor(userId: string): McpServer {
   const server = new McpServer(
     { name: 'app-exercicios', version: '1.0.0' },
     {
@@ -52,9 +72,10 @@ function criarServidor(): McpServer {
         'lanche, jantar, ceia. Datas em AAAA-MM-DD, no horário de Brasília (padrão: hoje).',
     }
   );
-  registrarFerramentas(server, supabase);
-  registrarFerramentasCiclo(server, supabase);
-  registrarFerramentasAlimentacao(server, supabase);
+  const db = criarEscopo(supabase, userId);
+  registrarFerramentas(server, db);
+  registrarFerramentasCiclo(server, db);
+  registrarFerramentasAlimentacao(server, db);
   return server;
 }
 
@@ -66,13 +87,8 @@ app.get('/health', (_req, res) => {
 });
 
 // Modo stateless: um servidor e um transporte novos por requisição
-app.post('/mcp/:secret', async (req: Request, res: Response) => {
-  if (!secretValido(req.params.secret)) {
-    res.status(404).json({ error: 'Not found' });
-    return;
-  }
-
-  const server = criarServidor();
+async function atenderMcp(req: Request, res: Response, userId: string) {
+  const server = criarServidor(userId);
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
     enableJsonResponse: true,
@@ -95,20 +111,41 @@ app.post('/mcp/:secret', async (req: Request, res: Response) => {
       });
     }
   }
-});
+}
 
-// Sem sessões, não há stream SSE (GET) nem encerramento de sessão (DELETE)
-app.all('/mcp/:secret', (req: Request, res: Response) => {
-  if (!secretValido(req.params.secret)) {
-    res.status(404).json({ error: 'Not found' });
-    return;
-  }
+function metodoNaoPermitido(res: Response) {
+  // Sem sessões, não há stream SSE (GET) nem encerramento de sessão (DELETE)
   res.status(405).set('Allow', 'POST').json({
     jsonrpc: '2.0',
     error: { code: -32000, message: 'Método não permitido.' },
     id: null,
   });
-});
+}
+
+if (LEGACY_SECRET_ROUTE) {
+  app.post('/mcp/:secret', async (req: Request, res: Response) => {
+    if (!secretValido(req.params.secret)) {
+      res.status(404).json({ error: 'Not found' });
+      return;
+    }
+    let userId: string;
+    try {
+      userId = await idUsuarioLegado();
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: 'Usuário da rota antiga não encontrado' }, id: null });
+      return;
+    }
+    await atenderMcp(req, res, userId);
+  });
+  app.all('/mcp/:secret', (req: Request, res: Response) => {
+    if (!secretValido(req.params.secret)) {
+      res.status(404).json({ error: 'Not found' });
+      return;
+    }
+    metodoNaoPermitido(res);
+  });
+}
 
 app.listen(PORT, () => {
   console.log(`Servidor MCP ouvindo na porta ${PORT}`);

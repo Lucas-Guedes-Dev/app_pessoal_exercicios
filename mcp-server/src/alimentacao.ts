@@ -1,5 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { Escopo } from './escopo.js';
 import { z } from 'zod';
 import { hojeSaoPaulo } from './ciclo.js';
 
@@ -182,18 +182,17 @@ async function lerTudo(montar: (de: number, ate: number) => PromiseLike<Resultad
   }
 }
 
-async function lerAlimento(supabase: SupabaseClient, id: number): Promise<Alimento | null> {
-  const { data, error } = await supabase.from(T_ALIMENTOS).select(COL_ALIMENTO).eq('id', id).maybeSingle();
+async function lerAlimento(db: Escopo, id: number): Promise<Alimento | null> {
+  const { data, error } = await db.lerAlimentos(COL_ALIMENTO).eq('id', id).maybeSingle();
   if (error) throw new Error(`Erro ao ler o alimento: ${error.message}`);
   return data ? paraAlimento(data) : null;
 }
 
-async function lerPorcoes(supabase: SupabaseClient, ids: number[]): Promise<Map<number, Porcao[]>> {
+async function lerPorcoes(db: Escopo, ids: number[]): Promise<Map<number, Porcao[]>> {
   const mapa = new Map<number, Porcao[]>();
   if (ids.length === 0) return mapa;
-  const { data, error } = await supabase
-    .from(T_PORCOES)
-    .select(COL_PORCAO)
+  const { data, error } = await db
+    .lerPorcoes(COL_PORCAO)
     .in('alimento_id', ids)
     .eq('deletado', false)
     .order('personalizada', { ascending: false })
@@ -207,13 +206,13 @@ async function lerPorcoes(supabase: SupabaseClient, ids: number[]): Promise<Map<
 }
 
 /** Busca sem acento, exigindo todas as palavras, na mesma ordem do app. */
-async function buscar(supabase: SupabaseClient, texto: string, limite: number): Promise<Alimento[]> {
+async function buscar(db: Escopo, texto: string, limite: number): Promise<Alimento[]> {
   const termos = normalizar(texto)
     .replace(/[%_()*]/g, ' ')
     .split(/[\s,]+/)
     .filter(Boolean);
   if (termos.length === 0) return [];
-  let q = supabase.from(T_ALIMENTOS).select(COL_ALIMENTO).eq('deletado', false);
+  let q = db.lerAlimentos(COL_ALIMENTO).eq('deletado', false);
   for (const t of termos) q = q.ilike('busca', `%${t}%`);
   const { data, error } = await q.limit(500);
   if (error) throw new Error(`Erro na busca: ${error.message}`);
@@ -236,13 +235,12 @@ function palavras(texto: string): Set<string> {
   );
 }
 
-async function parecidos(supabase: SupabaseClient, nome: string, ignorarId?: number): Promise<Alimento[]> {
+async function parecidos(db: Escopo, nome: string, ignorarId?: number): Promise<Alimento[]> {
   const alvo = palavras(nome);
   if (alvo.size === 0) return [];
   const maior = [...alvo].sort((a, b) => b.length - a.length)[0];
-  const { data, error } = await supabase
-    .from(T_ALIMENTOS)
-    .select(COL_ALIMENTO)
+  const { data, error } = await db
+    .lerAlimentos(COL_ALIMENTO)
     .eq('deletado', false)
     .ilike('busca', `%${maior}%`)
     .limit(300);
@@ -312,7 +310,7 @@ const gramasBaseSchema = z
 
 // ---------- ferramentas ----------
 
-export function registrarFerramentasAlimentacao(server: McpServer, supabase: SupabaseClient) {
+export function registrarFerramentasAlimentacao(server: McpServer, db: Escopo) {
   server.registerTool(
     'buscar_alimentos',
     {
@@ -331,11 +329,11 @@ export function registrarFerramentasAlimentacao(server: McpServer, supabase: Sup
     },
     async ({ texto, limite }) => {
       try {
-        const lista = await buscar(supabase, texto, limite ?? 10);
+        const lista = await buscar(db, texto, limite ?? 10);
         if (lista.length === 0) {
           return ok(`Nenhum alimento encontrado para "${texto}". Tente menos palavras ou cadastre com cadastrar_alimento.`, []);
         }
-        const porcoes = await lerPorcoes(supabase, lista.map((a) => a.id));
+        const porcoes = await lerPorcoes(db, lista.map((a) => a.id));
         return ok(
           `${lista.length} alimento(s) para "${texto}" (valores por 100 g).`,
           lista.map((a) => descreverAlimento(a, porcoes.get(a.id) ?? []))
@@ -356,9 +354,9 @@ export function registrarFerramentasAlimentacao(server: McpServer, supabase: Sup
     },
     async ({ id }) => {
       try {
-        const a = await lerAlimento(supabase, id);
+        const a = await lerAlimento(db, id);
         if (!a || a.deletado) return erro(`Alimento ${id} não encontrado.`);
-        const porcoes = await lerPorcoes(supabase, [id]);
+        const porcoes = await lerPorcoes(db, [id]);
         return ok(`Alimento ${a.nome}.`, descreverAlimento(a, porcoes.get(id) ?? []));
       } catch (e) {
         return erro(mensagemDe(e));
@@ -395,7 +393,7 @@ export function registrarFerramentasAlimentacao(server: McpServer, supabase: Sup
     async ({ nome, gramas_base, kcal, proteina, carbo, gordura, fibra, porcao_rotulo, confirmar }) => {
       try {
         if (!confirmar) {
-          const iguais = await parecidos(supabase, nome);
+          const iguais = await parecidos(db, nome);
           if (iguais.length) {
             return ok(
               `Não cadastrei: já existe(m) alimento(s) com nome parecido. Confirme com o usuário; ` +
@@ -406,9 +404,8 @@ export function registrarFerramentasAlimentacao(server: McpServer, supabase: Sup
         }
         // Igual a saveCustomFood: valores do rótulo → por 100 g
         const f = 100 / gramas_base;
-        const { data, error } = await supabase
-          .from(T_ALIMENTOS)
-          .insert({
+        const { data, error } = await db
+          .inserir(T_ALIMENTOS, {
             nome: nome.trim(),
             busca: normalizar(nome),
             categoria: 'Meus alimentos',
@@ -426,12 +423,11 @@ export function registrarFerramentasAlimentacao(server: McpServer, supabase: Sup
 
         // a porção do rótulo vira uma medida caseira (ex.: "scoop" = 30 g)
         if (porcao_rotulo?.trim() && gramas_base !== 100) {
-          const { error: e2 } = await supabase
-            .from(T_PORCOES)
-            .insert({ alimento_id: a.id, rotulo: porcao_rotulo.trim(), gramas: gramas_base, personalizada: true });
+          const { error: e2 } = await db
+            .inserir(T_PORCOES, { alimento_id: a.id, rotulo: porcao_rotulo.trim(), gramas: gramas_base, personalizada: true });
           if (e2) return erro(`Alimento ${a.id} criado, mas a medida falhou: ${e2.message}`);
         }
-        const porcoes = await lerPorcoes(supabase, [a.id]);
+        const porcoes = await lerPorcoes(db, [a.id]);
         return ok(`Alimento cadastrado (id ${a.id}). Valores convertidos para 100 g.`, descreverAlimento(a, porcoes.get(a.id) ?? []));
       } catch (e) {
         return erro(mensagemDe(e));
@@ -465,7 +461,7 @@ export function registrarFerramentasAlimentacao(server: McpServer, supabase: Sup
     },
     async ({ id, campos }) => {
       try {
-        const a = await lerAlimento(supabase, id);
+        const a = await lerAlimento(db, id);
         if (!a || a.deletado) return erro(`Alimento ${id} não encontrado.`);
         if (a.fonte !== 'custom') return erro(`"${a.nome}" é da base (${a.fonte}) e não pode ser alterado.`);
 
@@ -485,15 +481,14 @@ export function registrarFerramentasAlimentacao(server: McpServer, supabase: Sup
         }
         if (Object.keys(alteracoes).length === 0) return erro('Nenhum campo para alterar.');
 
-        const { data, error } = await supabase
-          .from(T_ALIMENTOS)
-          .update(alteracoes)
+        const { data, error } = await db
+          .atualizar(T_ALIMENTOS, alteracoes)
           .eq('id', id)
           .eq('fonte', 'custom')
           .select(COL_ALIMENTO)
           .single();
         if (error) return erro(`Erro ao editar: ${error.message}`);
-        const porcoes = await lerPorcoes(supabase, [id]);
+        const porcoes = await lerPorcoes(db, [id]);
         return ok('Alimento atualizado.', descreverAlimento(paraAlimento(data), porcoes.get(id) ?? []));
       } catch (e) {
         return erro(mensagemDe(e));
@@ -513,10 +508,10 @@ export function registrarFerramentasAlimentacao(server: McpServer, supabase: Sup
     },
     async ({ id }) => {
       try {
-        const a = await lerAlimento(supabase, id);
+        const a = await lerAlimento(db, id);
         if (!a || a.deletado) return erro(`Alimento ${id} não encontrado (ou já removido).`);
         if (a.fonte !== 'custom') return erro(`"${a.nome}" é da base (${a.fonte}) e não pode ser removido.`);
-        const { error } = await supabase.from(T_ALIMENTOS).update({ deletado: true }).eq('id', id).eq('fonte', 'custom');
+        const { error } = await db.atualizar(T_ALIMENTOS, { deletado: true }).eq('id', id).eq('fonte', 'custom');
         if (error) return erro(`Erro ao remover: ${error.message}`);
         return ok(`Alimento "${a.nome}" removido.`, { id, nome: a.nome });
       } catch (e) {
@@ -542,17 +537,16 @@ export function registrarFerramentasAlimentacao(server: McpServer, supabase: Sup
     },
     async ({ alimento_id, rotulo, gramas }) => {
       try {
-        const a = await lerAlimento(supabase, alimento_id);
+        const a = await lerAlimento(db, alimento_id);
         if (!a || a.deletado) return erro(`Alimento ${alimento_id} não encontrado.`);
-        const atuais = (await lerPorcoes(supabase, [alimento_id])).get(alimento_id) ?? [];
+        const atuais = (await lerPorcoes(db, [alimento_id])).get(alimento_id) ?? [];
         const existente = atuais.find((p) => p.personalizada && normalizar(p.rotulo) === normalizar(rotulo));
         const { error } = existente
-          ? await supabase.from(T_PORCOES).update({ gramas }).eq('id', existente.id)
-          : await supabase
-              .from(T_PORCOES)
-              .insert({ alimento_id, rotulo: rotulo.trim(), gramas, personalizada: true });
+          ? await db.atualizar(T_PORCOES, { gramas }).eq('id', existente.id)
+          : await db
+              .inserir(T_PORCOES, { alimento_id, rotulo: rotulo.trim(), gramas, personalizada: true });
         if (error) return erro(`Erro ao salvar a medida: ${error.message}`);
-        const porcoes = await lerPorcoes(supabase, [alimento_id]);
+        const porcoes = await lerPorcoes(db, [alimento_id]);
         return ok(
           `Medida "${rotulo.trim()}" = ${r1(gramas)} g ${existente ? 'atualizada' : 'criada'} em ${a.nome}.`,
           descreverAlimento(a, porcoes.get(alimento_id) ?? [])
@@ -594,10 +588,10 @@ export function registrarFerramentasAlimentacao(server: McpServer, supabase: Sup
       try {
         const dia = data ?? hojeSaoPaulo();
         const ids = [...new Set(itens.map((i) => i.alimento_id))];
-        const { data: rows, error } = await supabase.from(T_ALIMENTOS).select(COL_ALIMENTO).in('id', ids);
+        const { data: rows, error } = await db.lerAlimentos(COL_ALIMENTO).in('id', ids);
         if (error) return erro(`Erro ao ler os alimentos: ${error.message}`);
         const alimentos = new Map((rows ?? []).map((r) => [n(r.id), paraAlimento(r)]));
-        const porcoes = await lerPorcoes(supabase, ids);
+        const porcoes = await lerPorcoes(db, ids);
 
         // valida tudo antes de gravar qualquer coisa
         const linhas = [];
@@ -630,7 +624,7 @@ export function registrarFerramentasAlimentacao(server: McpServer, supabase: Sup
           });
         }
 
-        const { data: salvos, error: e2 } = await supabase.from(T_REGISTROS).insert(linhas).select(COL_REGISTRO);
+        const { data: salvos, error: e2 } = await db.inserir(T_REGISTROS, linhas).select(COL_REGISTRO);
         if (e2) return erro(`Erro ao registrar: ${e2.message}`);
         const regs = (salvos ?? []).map(paraRegistro);
         return ok(`${regs.length} item(ns) registrado(s) em ${rotuloRefeicao(refeicao)} de ${dia}.`, {
@@ -667,9 +661,8 @@ export function registrarFerramentasAlimentacao(server: McpServer, supabase: Sup
 
         const regs = (
           await lerTudo((a, b) =>
-            supabase
-              .from(T_REGISTROS)
-              .select(COL_REGISTRO)
+            db
+              .ler(T_REGISTROS, COL_REGISTRO)
               .eq('deletado', false)
               .gte('data', inicio)
               .lte('data', fim)
@@ -730,9 +723,8 @@ export function registrarFerramentasAlimentacao(server: McpServer, supabase: Sup
     },
     async ({ id, campos }) => {
       try {
-        const { data: row, error } = await supabase
-          .from(T_REGISTROS)
-          .select(COL_REGISTRO)
+        const { data: row, error } = await db
+          .ler(T_REGISTROS, COL_REGISTRO)
           .eq('id', id)
           .eq('deletado', false)
           .maybeSingle();
@@ -748,14 +740,14 @@ export function registrarFerramentasAlimentacao(server: McpServer, supabase: Sup
         if (campos.gramas !== undefined && (campos.porcao !== undefined || campos.quantidade !== undefined)) {
           return erro('Informe gramas OU porcao/quantidade, não os dois.');
         }
-        const alimento = r.alimento_id != null ? await lerAlimento(supabase, r.alimento_id) : null;
+        const alimento = r.alimento_id != null ? await lerAlimento(db, r.alimento_id) : null;
         if (campos.gramas !== undefined) {
           novasGramas = campos.gramas;
           alteracoes.porcao_rotulo = null;
           alteracoes.porcao_qtd = null;
         } else if (campos.porcao !== undefined) {
           if (!alimento) return erro('O alimento deste registro não existe mais; use gramas.');
-          const p = acharPorcao((await lerPorcoes(supabase, [alimento.id])).get(alimento.id) ?? [], campos.porcao);
+          const p = acharPorcao((await lerPorcoes(db, [alimento.id])).get(alimento.id) ?? [], campos.porcao);
           if ('erro' in p) return erro(p.erro);
           const qtd = campos.quantidade ?? 1;
           novasGramas = p.gramas * qtd;
@@ -782,9 +774,8 @@ export function registrarFerramentasAlimentacao(server: McpServer, supabase: Sup
         }
         if (Object.keys(alteracoes).length === 0) return erro('Nenhum campo para alterar.');
 
-        const { data: salvo, error: e2 } = await supabase
-          .from(T_REGISTROS)
-          .update(alteracoes)
+        const { data: salvo, error: e2 } = await db
+          .atualizar(T_REGISTROS, alteracoes)
           .eq('id', id)
           .select(COL_REGISTRO)
           .single();
@@ -814,9 +805,8 @@ export function registrarFerramentasAlimentacao(server: McpServer, supabase: Sup
     },
     async ({ id }) => {
       try {
-        const { data, error } = await supabase
-          .from(T_REGISTROS)
-          .update({ deletado: true })
+        const { data, error } = await db
+          .atualizar(T_REGISTROS, { deletado: true })
           .eq('id', id)
           .eq('deletado', false)
           .select(COL_REGISTRO);
@@ -847,9 +837,8 @@ export function registrarFerramentasAlimentacao(server: McpServer, supabase: Sup
     async ({ de_data, para_data, refeicao }) => {
       try {
         const destino = para_data ?? hojeSaoPaulo();
-        const { data, error } = await supabase
-          .from(T_REGISTROS)
-          .select(COL_REGISTRO)
+        const { data, error } = await db
+          .ler(T_REGISTROS, COL_REGISTRO)
           .eq('deletado', false)
           .eq('data', de_data)
           .eq('refeicao', refeicao)
@@ -874,7 +863,7 @@ export function registrarFerramentasAlimentacao(server: McpServer, supabase: Sup
           carbo: r.carbo,
           gordura: r.gordura,
         }));
-        const { data: salvos, error: e2 } = await supabase.from(T_REGISTROS).insert(copias).select(COL_REGISTRO);
+        const { data: salvos, error: e2 } = await db.inserir(T_REGISTROS, copias).select(COL_REGISTRO);
         if (e2) return erro(`Erro ao copiar: ${e2.message}`);
         const regs = (salvos ?? []).map(paraRegistro);
         return ok(`${regs.length} item(ns) copiado(s) de ${de_data} para ${destino} (${rotuloRefeicao(refeicao)}).`, {
@@ -906,9 +895,8 @@ export function registrarFerramentasAlimentacao(server: McpServer, supabase: Sup
         if (diasEntre(de, ate) > 366) return erro('Período máximo: 366 dias.');
         const regs = (
           await lerTudo((a, b) =>
-            supabase
-              .from(T_REGISTROS)
-              .select(COL_REGISTRO)
+            db
+              .ler(T_REGISTROS, COL_REGISTRO)
               .eq('deletado', false)
               .gte('data', de)
               .lte('data', ate)
