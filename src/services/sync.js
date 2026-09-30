@@ -1,5 +1,6 @@
 import {
   applyRemoteExercises,
+  currentDbOwner,
   getCurrentWeek,
   getExercise,
   getSetting,
@@ -77,12 +78,15 @@ async function doSync() {
 }
 
 async function syncExercisesAndCycle() {
+  const as = currentDbOwner();
+  if (!as) return { ok: false, reason: 'no-account' };
   try {
     const rows = await request(
-      'exercicios?select=id,nome,quantidade,descricao,dia_semana,semanas,deletado&order=criado_em'
+      'exercicios?select=id,nome,quantidade,descricao,dia_semana,semanas,deletado&order=criado_em',
+      { as }
     );
     let changed = await applyRemoteExercises(rows.map(toLocal));
-    changed += await syncCycle().catch((e) => {
+    changed += await syncCycle(as).catch((e) => {
       console.log('Ciclo não sincronizado:', String(e));
       return 0;
     });
@@ -112,6 +116,7 @@ export async function pushExercise(id) {
   if (!split) throw new Error('Preencha os detalhes com a quantidade (ex.: 3x15) antes de enviar.');
 
   const [created] = await request('exercicios?select=id,nome,quantidade,descricao,dia_semana,semanas,deletado', {
+    as: currentDbOwner(),
     method: 'POST',
     prefer: 'return=representation',
     body: {
@@ -128,7 +133,7 @@ export async function pushExercise(id) {
 }
 
 // ---------- Ciclo de semanas ----------
-// Tabela "ciclo" no Supabase (uma linha, id = 1). O Claude muda pelo MCP; a tela "Semanas"
+// Tabela "ciclo" no Supabase (uma linha por usuário). O Claude muda pelo MCP; a tela "Semanas"
 // do app também grava lá (pushCycle). Guardamos o atualizado_em da última versão aplicada/enviada
 // para não reaplicar a mesma configuração a cada sincronização.
 
@@ -140,8 +145,8 @@ function weeksBetween(fromKey, toKey) {
 }
 
 /** Aplica no SQLite a configuração de ciclo do Supabase. Retorna 1 se mudou algo. */
-async function syncCycle() {
-  const [remote] = await request('ciclo?select=semanas,semana_atual,semana_inicio,atualizado_em&id=eq.1');
+async function syncCycle(as) {
+  const [remote] = await request('ciclo?select=semanas,semana_atual,semana_inicio,atualizado_em', { as });
   if (!remote) return 0;
   if ((await getSetting(CYCLE_SYNC_KEY)) === remote.atualizado_em) return 0;
 
@@ -176,10 +181,12 @@ async function syncCycle() {
 export async function pushCycle() {
   if (!isSyncConfigured()) return;
   const week = await getCurrentWeek();
-  const [saved] = await request('ciclo?on_conflict=id&select=atualizado_em', {
+  // uma linha por usuário: user_id vem do login (default auth.uid() no Supabase)
+  const [saved] = await request('ciclo?on_conflict=user_id&select=atualizado_em', {
+    as: currentDbOwner(),
     method: 'POST',
     prefer: 'resolution=merge-duplicates,return=representation',
-    body: { id: 1, semanas: week.count, semana_atual: week.letter, semana_inicio: week.weekStart },
+    body: { semanas: week.count, semana_atual: week.letter, semana_inicio: week.weekStart },
   });
   if (saved?.atualizado_em) await setSetting(CYCLE_SYNC_KEY, saved.atualizado_em);
 }

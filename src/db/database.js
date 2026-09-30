@@ -5,18 +5,52 @@ import { addDays, parseDateKey, startOfWeek, toDateKey } from '../utils/dates';
 import { DEFAULT_WEEKS, MAX_WEEKS, MIN_WEEKS, WEEK_LETTERS, shiftLetter } from '../utils/weeks';
 import { guessActivity } from '../utils/energy';
 
+// Um arquivo SQLite por conta (exercicios-<user_id>.db). O banco de antes das contas
+// (exercicios.db) continua no aparelho e é usado pela conta que o assumir no primeiro login.
+export const LEGACY_DB_NAME = 'exercicios.db';
+export const dbNameForUser = (userId) => `exercicios-${userId}.db`;
+
+let dbName = null;
+let dbOwner = null;
 let dbPromise = null;
 
+/** Escolhe o banco da conta logada (chamado no login, antes de qualquer getDb) */
+export function useDatabase(fileName, ownerId) {
+  dbOwner = ownerId;
+  if (fileName === dbName) return;
+  dbName = fileName;
+  dbPromise = null;
+}
+
+/** id da conta dona do banco aberto (as sincronizações só enviam com o token dela) */
+export const currentDbOwner = () => dbOwner;
+
+/** Fecha o banco atual (ao sair da conta) */
+export async function closeDb() {
+  const open = dbPromise;
+  dbName = null;
+  dbOwner = null;
+  dbPromise = null;
+  const db = await open?.catch(() => null);
+  await db?.closeAsync?.().catch(() => {});
+}
+
 export function getDb() {
+  if (!dbName) return Promise.reject(new Error('Nenhuma conta aberta.'));
   if (!dbPromise) {
+    const name = dbName;
     dbPromise = (async () => {
-      const db = await SQLite.openDatabaseAsync('exercicios.db');
+      const db = await SQLite.openDatabaseAsync(name);
       await migrate(db);
-      await seedIfEmpty(db);
+      // o plano inicial de exemplo só existia antes das contas; conta nova começa vazia
+      if (name === LEGACY_DB_NAME) await seedIfEmpty(db);
       await fillExerciseActivities(db);
       await seedFoods(db);
       return db;
     })();
+    dbPromise.catch(() => {
+      if (dbName === name) dbPromise = null; // deixa tentar de novo
+    });
   }
   return dbPromise;
 }

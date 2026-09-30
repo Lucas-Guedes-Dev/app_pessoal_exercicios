@@ -1,6 +1,6 @@
-import { getDb, getSetting, setSetting } from '../db/database';
+import { currentDbOwner, getDb, getSetting, setSetting } from '../db/database';
 import { normalize } from '../utils/text';
-import { isSyncConfigured, request } from './supabase';
+import { isSyncConfigured, request as supabaseRequest } from './supabase';
 
 /*
  * Sincronização da alimentação com o Supabase, nos dois sentidos.
@@ -76,8 +76,14 @@ export function requestFoodSync() {
   }, DEBOUNCE_MS);
 }
 
+// Conta dona do banco nesta rodada: toda chamada usa o token dela (ver request em supabase.js)
+let runOwner = null;
+const request = (path, options = {}) => supabaseRequest(path, { ...options, as: runOwner });
+
 async function runOnce() {
   if (!isSyncConfigured()) return { ok: false, reason: 'not-configured' };
+  runOwner = currentDbOwner();
+  if (!runOwner) return { ok: false, reason: 'no-account' };
   try {
     const db = await getDb();
     let changed = 0;

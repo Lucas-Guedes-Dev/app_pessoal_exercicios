@@ -18,6 +18,7 @@ import { DEFAULT_FACTOR, LIFESTYLES } from '../utils/energy';
 import { colors } from '../theme';
 import { formatBirthBR, formatNumber, maskDateBR } from '../utils/health';
 import { validateMeasurement, validateProfile } from '../utils/validation';
+import { useSession } from '../services/session-context';
 
 /**
  * Perfil da pessoa.
@@ -26,6 +27,7 @@ import { validateMeasurement, validateProfile } from '../utils/validation';
  */
 export default function ProfileFormScreen({ navigation, route }) {
   const onboarding = !!route.params?.onboarding;
+  const { user, signOut } = useSession();
 
   const [name, setName] = useState('');
   const [sex, setSex] = useState(null);
@@ -83,6 +85,17 @@ export default function ProfileFormScreen({ navigation, route }) {
       Alert.alert('Erro ao salvar', String(e));
       setSaving(false);
     }
+  };
+
+  const confirmSignOut = () => {
+    Alert.alert(
+      'Sair da conta',
+      'Os dados continuam salvos neste celular e voltam quando você entrar de novo. Os lembretes desta conta param até lá.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Sair', style: 'destructive', onPress: () => signOut() },
+      ]
+    );
   };
 
   if (loading) {
@@ -155,6 +168,19 @@ export default function ProfileFormScreen({ navigation, route }) {
         <Pressable onPress={save} disabled={saving} style={({ pressed }) => [styles.button, (pressed || saving) && { opacity: 0.7 }]}>
           <Text style={styles.buttonText}>{saving ? 'Salvando...' : onboarding ? 'Começar' : 'Salvar perfil'}</Text>
         </Pressable>
+
+        {!!user && (
+          <View style={styles.account}>
+            <Text style={styles.accountText}>Conta: {user.email}</Text>
+            <Pressable
+              onPress={confirmSignOut}
+              disabled={saving}
+              style={({ pressed }) => [onboarding ? styles.signOutLink : styles.signOutButton, pressed && { opacity: 0.7 }]}
+            >
+              <Text style={styles.signOutText}>{onboarding ? 'Entrou com a conta errada? Sair' : 'Sair da conta'}</Text>
+            </Pressable>
+          </View>
+        )}
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -174,4 +200,17 @@ const styles = StyleSheet.create({
   hint: { fontSize: 12, color: colors.muted, marginTop: 6, lineHeight: 17 },
   button: { backgroundColor: colors.primary, borderRadius: 12, paddingVertical: 14, alignItems: 'center', marginTop: 28 },
   buttonText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  account: { marginTop: 28, alignItems: 'center' },
+  accountText: { fontSize: 13, color: colors.muted },
+  signOutButton: {
+    alignSelf: 'stretch',
+    alignItems: 'center',
+    borderRadius: 12,
+    paddingVertical: 14,
+    marginTop: 10,
+    borderWidth: 1,
+    borderColor: colors.danger,
+  },
+  signOutLink: { padding: 10, marginTop: 4 },
+  signOutText: { color: colors.danger, fontSize: 15, fontWeight: '600' },
 });
