@@ -97,6 +97,19 @@ e cole a URL.
 > A URL contém o segredo: quem tiver a URL consegue mexer no seu plano. Se ela vazar, troque
 > o `MCP_SECRET` no Render e atualize a URL do conector.
 
+## 5. Configurar o app
+
+1. Na raiz do projeto do app, copie `.env.example` para `.env` e preencha
+   `EXPO_PUBLIC_SUPABASE_URL` e `EXPO_PUBLIC_SUPABASE_ANON_KEY`. Use a chave **anon/publishable**,
+   nunca a service_role.
+2. Gere o app de novo (ex.: `npx expo run:android --variant release`, ou o comando que você usa
+   para gerar o APK). As variáveis `EXPO_PUBLIC_` são embutidas no build, então um APK antigo não as enxerga.
+3. O app sincroniza ao abrir, ao voltar para a tela e no "puxar para atualizar" da tela inicial
+   e de "Todos os Exercícios". Sem internet, ele usa o que já está salvo.
+4. Exercícios que vieram do Supabase aparecem com "☁ Claude" em "Todos os Exercícios". No app dá
+   para mudar só o tipo de atividade e a duração deles. Exercícios criados no app têm o botão
+   **Enviar para o Supabase** na tela de edição.
+
 ## Segurança, em resumo
 
 - `/mcp/:secret`: o segredo é comparado com `MCP_SECRET` em tempo constante. Com segredo errado, a resposta é 404.
