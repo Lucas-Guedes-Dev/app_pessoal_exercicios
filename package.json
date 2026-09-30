@@ -6,7 +6,9 @@
   "scripts": {
     "start": "expo start",
     "android": "expo run:android",
-    "ios": "expo run:ios"
+    "ios": "expo run:ios",
+    "apk": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/apk.ps1",
+    "apk:instalar": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/apk.ps1 -SoInstalar"
   },
   "dependencies": {
     "@react-navigation/native": "^6.1.18",
