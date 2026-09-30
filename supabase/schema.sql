@@ -6,8 +6,6 @@
 --               Códigos: Dom, Seg, Ter, Qua, Qui, Sex, Sab (sem acento)
 --   semanas:    letras do ciclo de semanas. Ex.: 'A,B,C,D,E,F' (todas)
 
-create extension if not exists pgcrypto;
-
 create table if not exists public.exercicios (
   id            uuid primary key default gen_random_uuid(),
   nome          text not null check (length(trim(nome)) > 0),
